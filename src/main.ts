@@ -4,6 +4,7 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { OpenAPIObject, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { applyMigrations } from './migrate';
 
 // libsignal (under Baileys) prints whole sessions straight to the console,
 // private keys included, and no logger setting reaches it. Nest and the
@@ -18,6 +19,8 @@ if (process.env.VERBOSE_LOGS !== 'true') {
 }
 
 async function bootstrap() {
+  applyMigrations();
+
   // rawBody: the Clerk webhook verifies its signature over the exact bytes
   // Clerk sent (req.rawBody), not the parsed JSON.
   // Only src/activity lines are printed unless VERBOSE_LOGS=true.

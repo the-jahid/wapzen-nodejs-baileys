@@ -10,7 +10,7 @@ services:
     # Exactly one instance: two would open competing sockets for every number.
     numInstances: 1
     buildCommand: npm ci && npm run build
-    preDeployCommand: npx prisma migrate deploy
+    # Migrations run at boot (src/migrate.ts), so no preDeployCommand.
     # node directly, not npm run start:prod (npm's parent process costs ~50 MB).
     startCommand: node --max-old-space-size=1536 --max-semi-space-size=32 dist/main
     healthCheckPath: /
