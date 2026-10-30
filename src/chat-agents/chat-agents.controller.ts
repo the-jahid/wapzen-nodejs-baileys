@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import type { User } from '../generated/prisma/client';
+import { activity } from '../activity/activity';
 import { ClerkAuthGuard, CurrentUser } from '../auth/auth.guard';
 import { ChatAgentsService } from './chat-agents.service';
 import {
@@ -59,10 +60,14 @@ export class ChatAgentsController {
   async create(@CurrentUser() user: User, @Body() body: unknown) {
     const req = parseInput(body);
     validateCreate(req);
+    const agent = await this.chatAgents.create(user.id, req);
+    activity(
+      `chat agent created: ${user.email} - ${agent.agent.name} (${agent.agent.status})`,
+    );
     return {
       success: true,
       message: 'Chat agent created successfully',
-      data: await this.chatAgents.create(user.id, req),
+      data: agent,
     };
   }
 
@@ -83,10 +88,14 @@ export class ChatAgentsController {
   ) {
     const req = parseInput(body);
     validateUpdate(req);
+    const agent = await this.chatAgents.update(user.id, id.trim(), req);
+    activity(
+      `chat agent updated: ${user.email} - ${agent.agent.name} (${agent.agent.status})`,
+    );
     return {
       success: true,
       message: 'Chat agent updated successfully',
-      data: await this.chatAgents.update(user.id, id.trim(), req),
+      data: agent,
     };
   }
 
@@ -95,6 +104,7 @@ export class ChatAgentsController {
   async remove(@CurrentUser() user: User, @Param('chat_agent_id') id: string) {
     id = id.trim();
     await this.chatAgents.remove(user.id, id);
+    activity(`chat agent deleted: ${user.email}`);
     return {
       success: true,
       message: 'Chat agent deleted successfully',

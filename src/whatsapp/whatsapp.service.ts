@@ -52,6 +52,10 @@ const MAX_RECONNECT_DELAY_MS = 5 * 60_000;
 // drops the sockets again. A number that takes longer stops holding its slot.
 const RESUME_CONCURRENCY = 5;
 const RESUME_SLOT_MS = 30_000;
+// Longer than any login lasts. A deploy starts the new server while the old
+// one is still running its logins, so a pending row younger than this may be
+// someone scanning right now, and the old server is gone by the time it passes.
+const LOGIN_MAX_MS = 5 * 60_000;
 // Baileys' own log output, off unless VERBOSE_LOGS=true.
 const BAILEYS_LOG_LEVEL =
   process.env.VERBOSE_LOGS === 'true' ? 'error' : 'silent';
@@ -118,19 +122,40 @@ export class WhatsAppService
   }
 
   private async resumeSessions() {
-    // A login can't survive a restart. One that never linked is dropped; a
-    // linked number that was mid re-pair has no keys left and stays offline
-    // until someone pairs it again.
+    await this.dropAbandonedLogins();
+    await this.resumeLinked();
+    // Anything the outgoing server linked after this pass is nobody's once it
+    // exits, so look again when it has gone.
+    setTimeout(() => {
+      if (this.shuttingDown) return;
+      this.dropAbandonedLogins()
+        .then(() => this.resumeLinked())
+        .catch((err: Error) =>
+          this.logger.error(`resuming phone numbers failed: ${err.message}`),
+        );
+    }, LOGIN_MAX_MS).unref();
+  }
+
+  // A login that outlived LOGIN_MAX_MS has no server behind it any more. One
+  // that never linked is dropped; a linked number that was mid re-pair has no
+  // keys left and stays offline until someone pairs it again.
+  private async dropAbandonedLogins() {
+    const abandoned = {
+      status: 'pending_qr',
+      updatedAt: { lt: new Date(Date.now() - LOGIN_MAX_MS) },
+    };
     const unlinked = await this.prisma.phoneNumber.findMany({
-      where: { status: 'pending_qr', waJid: null },
+      where: { ...abandoned, waJid: null },
       select: { id: true },
     });
     for (const { id } of unlinked) await this.deleteRow(id);
     await this.prisma.phoneNumber.updateMany({
-      where: { status: 'pending_qr' },
+      where: abandoned,
       data: { status: 'disconnected', qrCode: null },
     });
+  }
 
+  private async resumeLinked() {
     const linked = await this.prisma.phoneNumber.findMany({
       where: { waJid: { not: null }, authValues: { some: { key: 'creds' } } },
       select: { id: true },
@@ -138,7 +163,8 @@ export class WhatsAppService
     let next = 0;
     const worker = async () => {
       while (!this.shuttingDown && next < linked.length) {
-        await this.connectAndWait(linked[next++].id);
+        const { id } = linked[next++];
+        if (!this.sockets.has(id)) await this.connectAndWait(id);
       }
     };
     await Promise.all(Array.from({ length: RESUME_CONCURRENCY }, worker));
@@ -169,10 +195,10 @@ export class WhatsAppService
     for (const sock of this.sockets.values()) void sock.end(undefined);
   }
 
-  // The account's numbers. Logins nobody has scanned yet aren't numbers.
+  // The account's numbers. Logins that haven't finished linking aren't numbers.
   async list(userId: string): Promise<PhoneNumberResource[]> {
     const rows = await this.prisma.phoneNumber.findMany({
-      where: { userId, NOT: { status: 'pending_qr', waJid: null } },
+      where: { userId, NOT: { status: 'pending_qr', phoneNumber: null } },
       orderBy: { createdAt: 'desc' },
     });
     return Promise.all(rows.map((row) => toResource(row, undefined)));
@@ -279,6 +305,7 @@ export class WhatsAppService
   async logout(userId: string, id: string) {
     const row = await this.owned(userId, id);
     await this.unlinkOrFail(id, row.waJid);
+    await this.reportGone(id, 'number removed');
     await this.deleteRow(id);
   }
 
@@ -475,6 +502,20 @@ export class WhatsAppService
     void sock?.end(undefined);
   }
 
+  // One activity line for a linked number about to go. A draft has no number
+  // to report, and a failed lookup mustn't stop the delete.
+  private async reportGone(id: string, what: string) {
+    const row = await this.prisma.phoneNumber
+      .findUnique({
+        where: { id },
+        select: { phoneNumber: true, user: { select: { email: true } } },
+      })
+      .catch(() => null);
+    if (row?.phoneNumber) {
+      activity(`${what}: ${row.user.email} - ${row.phoneNumber}`);
+    }
+  }
+
   // Deletes a phone number. Its chat agent is paused first: an active agent
   // must have a number, so the foreign key's SET NULL alone would fail.
   private async deleteRow(id: string) {
@@ -532,8 +573,19 @@ export class WhatsAppService
       );
     });
 
-    sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+    sock.ev.on('connection.update', (update) => {
+      const { connection, lastDisconnect, qr, isNewLogin } = update;
       void (async () => {
+        // The phone has linked this device. The row says so straight away:
+        // the socket only opens after a reconnect, and a restart in that gap
+        // must find a number to resume, not a draft to delete.
+        if (isNewLogin && state.creds.me) {
+          await this.prisma.phoneNumber.updateMany({
+            where: { id },
+            data: { waJid: state.creds.me.id },
+          });
+        }
+
         if (qr && opts.pairWith && !state.creds.registered) {
           if (pairingRequested) return;
           pairingRequested = true;
@@ -627,7 +679,14 @@ export class WhatsAppService
     const user = waJid ? jidDecode(waJid)?.user : undefined;
     const phoneNumber = user ? `+${user}` : null;
     const row = await this.prisma.phoneNumber.findUnique({ where: { id } });
-    if (!row) return;
+    if (!row) {
+      // Removed while this socket was linking, so its keys can't be stored.
+      // Leaving it would strand a device on the phone that nothing can remove.
+      await this.unlink(id, waJid).catch((err: Error) =>
+        this.logger.warn(`unlink ${id} failed: ${err.message}`),
+      );
+      return;
+    }
 
     const existing = phoneNumber
       ? await this.prisma.phoneNumber.findFirst({
@@ -706,9 +765,20 @@ export class WhatsAppService
     if (this.shuttingDown) return;
     const statusCode = closeCode(error);
 
+    // Another connection took this device over. Only this server holds the
+    // device's keys, so that is a newer copy of this server: a deploy starts
+    // the new one before stopping the old, and it has already marked the
+    // number connected. Writing 'disconnected' here would hide a working
+    // number, and reconnecting would make the two kick each other off.
+    if (statusCode === DisconnectReason.connectionReplaced) {
+      this.endLogin(id, 'completed', 'handed to the new server');
+      return;
+    }
+
     // Unlinked from the phone: the keys are useless now.
     if (statusCode === DisconnectReason.loggedOut) {
       this.endLogin(id, 'failed', 'WhatsApp refused the link');
+      await this.reportGone(id, 'number unlinked from the phone');
       await this.deleteRow(id);
       this.logger.log(`${id} logged out`);
       return;
@@ -746,13 +816,6 @@ export class WhatsAppService
       });
       return;
     }
-
-    // Another connection took this device over. Only this server holds the
-    // device's keys, so that is a newer copy of this server: a deploy starts
-    // the new one before stopping the old, and it has already marked the
-    // number connected. Writing 'disconnected' here would hide a working
-    // number, and reconnecting would make the two kick each other off.
-    if (statusCode === DisconnectReason.connectionReplaced) return;
 
     await this.prisma.phoneNumber.update({
       where: { id },

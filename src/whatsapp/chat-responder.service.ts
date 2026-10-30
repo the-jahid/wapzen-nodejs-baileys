@@ -8,6 +8,7 @@ import {
   ToolMessage,
   type BaseMessage,
 } from '@langchain/core/messages';
+import { activity } from '../activity/activity';
 import {
   DEFAULT_MODEL,
   MAX_REPLIES_PER_AGENT,
@@ -42,6 +43,7 @@ type Turn = { role: 'user' | 'assistant'; text: string };
 type ReplyingAgent = ChatAgent & {
   tools: { tool: Tool }[];
   phoneNumber: { phoneNumber: string | null } | null;
+  user: { email: string };
 };
 
 export type IncomingChat = {
@@ -82,6 +84,7 @@ export class ChatResponderService {
           orderBy: [{ createdAt: 'asc' }, { toolId: 'asc' }],
         },
         phoneNumber: { select: { phoneNumber: true } },
+        user: { select: { email: true } },
       },
     });
     if (!agent) return;
@@ -139,6 +142,9 @@ export class ChatResponderService {
     });
     if (count === 0) {
       this.logger.log(`chat agent ${agent.id} has used all its replies`);
+      activity(
+        `reply limit reached: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
+      );
       return '';
     }
 
@@ -208,6 +214,9 @@ export class ChatResponderService {
       this.remember(key, { role: 'user', text: chat.text });
       this.remember(key, { role: 'assistant', text: reply });
       this.logger.log(`chat agent ${agent.id} replied to ${chat.peerJid}`);
+      activity(
+        `AI replied: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
+      );
       return reply;
     } catch (err) {
       this.logger.error(

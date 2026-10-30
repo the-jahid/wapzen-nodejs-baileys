@@ -1,5 +1,6 @@
-// The lines the production log is for: who signed up, who signed in, and how
-// their WhatsApp logins went. Printed whatever VERBOSE_LOGS says, which only
+// The lines the production log is for: one line per thing a user does, with
+// their email (sign-ups, sign-ins, WhatsApp logins, numbers removed, chat agent
+// changes, AI replies). Printed whatever VERBOSE_LOGS says, which only
 // switches the rest of the server's logging.
 
 // A signed-in dashboard sends a request every few seconds, so a user gets a

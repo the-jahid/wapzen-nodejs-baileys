@@ -5,6 +5,18 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { OpenAPIObject, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 
+// libsignal (under Baileys) prints whole sessions straight to the console,
+// private keys included, and no logger setting reaches it. Nest and the
+// activity lines write to stdout directly, so they aren't affected.
+const silent = () => undefined;
+console.info = silent;
+console.warn = silent;
+console.debug = silent;
+if (process.env.VERBOSE_LOGS !== 'true') {
+  console.log = silent;
+  console.error = silent;
+}
+
 async function bootstrap() {
   // rawBody: the Clerk webhook verifies its signature over the exact bytes
   // Clerk sent (req.rawBody), not the parsed JSON.
