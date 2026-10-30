@@ -8,7 +8,7 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   // rawBody: the Clerk webhook verifies its signature over the exact bytes
   // Clerk sent (req.rawBody), not the parsed JSON.
-  // No log output unless VERBOSE_LOGS=true.
+  // Only src/activity lines are printed unless VERBOSE_LOGS=true.
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     rawBody: true,
     logger: process.env.VERBOSE_LOGS === 'true' ? undefined : false,

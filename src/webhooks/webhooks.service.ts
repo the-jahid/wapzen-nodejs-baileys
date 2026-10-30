@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { userSignedUp } from '../activity/activity';
 import { PrismaService } from '../prisma/prisma.service';
 
 // The parts of a Clerk user event this server reads.
@@ -42,6 +43,7 @@ export class WebhooksService {
           create: { oauthId: user.id, email, username },
           update: { email, username },
         });
+        if (event.type === 'user.created') userSignedUp(user.id, email);
         return null;
       }
       case 'user.deleted':

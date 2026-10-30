@@ -23,6 +23,7 @@ import makeWASocket, {
   WAVersion,
 } from 'baileys';
 import pino from 'pino';
+import { activity } from '../activity/activity';
 import { apiError } from '../chat-agents/chat-agents.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { usePrismaAuthState } from './auth-state';
@@ -161,6 +162,10 @@ export class WhatsAppService
 
   onModuleDestroy() {
     this.shuttingDown = true;
+    // A login can't survive a restart, so its user has to start again.
+    for (const id of [...this.logins.keys()]) {
+      this.endLogin(id, 'failed', 'the server restarted');
+    }
     for (const sock of this.sockets.values()) void sock.end(undefined);
   }
 
@@ -182,6 +187,7 @@ export class WhatsAppService
   // code (or the pairing code).
   async startLogin(
     userId: string,
+    email: string,
     req: LoginRequest,
   ): Promise<PhoneNumberResource> {
     const running = await this.prisma.phoneNumber.findMany({
@@ -191,6 +197,7 @@ export class WhatsAppService
     if (req.byCode) {
       // A code login replaces any QR login the user has open.
       for (const row of running) {
+        this.endLogin(row.id, 'cancelled', 'switched to a pairing code');
         this.stopSocket(row.id);
         await this.deleteRow(row.id);
       }
@@ -205,11 +212,15 @@ export class WhatsAppService
       data: { userId, label: req.label },
     });
     try {
-      await this.openLogin(row.id, req.byCode ? req.phoneNumber : undefined);
+      await this.openLogin(
+        row.id,
+        email,
+        req.byCode ? req.phoneNumber : undefined,
+      );
     } catch (err) {
       this.stopSocket(row.id);
       await this.deleteRow(row.id);
-      throw this.loginError(err as Error, req.byCode);
+      throw this.loginError(err as Error, req.byCode, email);
     }
     return this.get(userId, row.id);
   }
@@ -220,6 +231,7 @@ export class WhatsAppService
     userId: string,
     id: string,
     forceRepair: boolean,
+    email: string,
   ): Promise<PhoneNumberResource> {
     const row = await this.owned(userId, id);
     const sock = this.sockets.get(id);
@@ -247,7 +259,7 @@ export class WhatsAppService
     });
 
     try {
-      await this.openLogin(id);
+      await this.openLogin(id, email);
     } catch (err) {
       this.stopSocket(id);
       this.logins.delete(id);
@@ -255,7 +267,7 @@ export class WhatsAppService
         where: { id },
         data: { status: 'disconnected', qrCode: null },
       });
-      throw this.loginError(err as Error, false);
+      throw this.loginError(err as Error, false, email);
     }
     return this.get(userId, id);
   }
@@ -313,7 +325,7 @@ export class WhatsAppService
     const sock = this.sockets.get(id);
     this.sockets.delete(id);
     const login = this.logins.get(id);
-    this.logins.delete(id);
+    this.endLogin(id, 'cancelled');
     if (!waJid || login) {
       void sock?.end(undefined);
       return;
@@ -394,9 +406,15 @@ export class WhatsAppService
   }
 
   // Opens a socket for a login and waits for its first QR or pairing code.
-  private openLogin(id: string, phoneNumber?: string) {
-    this.logins.set(id, { startedAt: Date.now(), qrCount: 0 });
-    return new Promise<void>((resolve, reject) => {
+  private async openLogin(id: string, email: string, phoneNumber?: string) {
+    const login: LoginState = {
+      email,
+      byCode: !!phoneNumber,
+      startedAt: Date.now(),
+      qrCount: 0,
+    };
+    this.logins.set(id, login);
+    await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(
         () => reject(new Error('WhatsApp did not return a login code in time')),
         FIRST_CODE_TIMEOUT_MS,
@@ -412,10 +430,21 @@ export class WhatsAppService
         onError: settle,
       }).catch(settle);
     });
+    login.codeShown = true;
+    reportLogin(login, 'started');
   }
 
-  private loginError(err: Error, byCode: boolean) {
+  // Forgets a login and reports how it ended. One that never got as far as
+  // showing a code is reported by loginError instead.
+  private endLogin(id: string, outcome: string, detail?: string) {
+    const login = this.logins.get(id);
+    this.logins.delete(id);
+    if (login?.codeShown) reportLogin(login, outcome, detail);
+  }
+
+  private loginError(err: Error, byCode: boolean, email: string) {
     this.logger.warn(`login failed: ${err.message}`);
+    reportLogin({ email, byCode }, 'failed', err.message);
     if (byCode) {
       return apiError(
         HttpStatus.BAD_REQUEST,
@@ -543,9 +572,10 @@ export class WhatsAppService
             !!state.creds.me,
           );
         }
-      })().catch((err: Error) =>
-        this.logger.error(`connection.update ${id} failed: ${err.message}`),
-      );
+      })().catch((err: Error) => {
+        this.logger.error(`connection.update ${id} failed: ${err.message}`);
+        this.endLogin(id, 'failed', err.message);
+      });
     });
 
     // Both upsert types are real incoming messages: 'notify' arrived while
@@ -590,6 +620,7 @@ export class WhatsAppService
   }
 
   private async markConnected(id: string, sock: WASocket) {
+    const login = this.logins.get(id);
     this.logins.delete(id);
     this.failures.delete(id);
     const waJid = sock.user?.id ?? null;
@@ -605,6 +636,7 @@ export class WhatsAppService
       : null;
     if (existing) {
       await this.moveOnto(id, sock, existing.id, existing.waJid);
+      if (login) reportLogin(login, 'completed', `linked ${phoneNumber}`);
       return;
     }
 
@@ -619,6 +651,7 @@ export class WhatsAppService
       },
     });
     this.logger.log(`${id} connected as ${phoneNumber}`);
+    if (login) reportLogin(login, 'completed', `linked ${phoneNumber}`);
   }
 
   // The account linked a number it already has: the new device's keys move
@@ -675,6 +708,7 @@ export class WhatsAppService
 
     // Unlinked from the phone: the keys are useless now.
     if (statusCode === DisconnectReason.loggedOut) {
+      this.endLogin(id, 'failed', 'WhatsApp refused the link');
       await this.deleteRow(id);
       this.logger.log(`${id} logged out`);
       return;
@@ -693,7 +727,15 @@ export class WhatsAppService
     // A login nobody finished. One that never linked anything is dropped,
     // which is what tells the dashboard to ask for a fresh code.
     if (this.logins.has(id) || !row.waJid || !hasCreds) {
-      this.logins.delete(id);
+      if (statusCode === DisconnectReason.timedOut) {
+        this.endLogin(id, 'expired', 'never completed on the phone');
+      } else {
+        this.endLogin(
+          id,
+          'failed',
+          `connection closed (${statusCode ?? 'no code'})`,
+        );
+      }
       if (!row.waJid) {
         await this.deleteRow(id);
         return;
@@ -735,6 +777,16 @@ export class WhatsAppService
       );
     }, delay);
   }
+}
+
+function reportLogin(
+  login: Pick<LoginState, 'email' | 'byCode'>,
+  outcome: string,
+  detail?: string,
+) {
+  const kind = login.byCode ? 'pairing code' : 'QR scan';
+  const suffix = detail ? ` - ${detail}` : '';
+  activity(`${kind} ${outcome}: ${login.email}${suffix}`);
 }
 
 // The status code Baileys closed a socket with, if any.

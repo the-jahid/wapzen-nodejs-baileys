@@ -43,6 +43,7 @@ export class WhatsAppController {
         user.id,
         req.phoneNumberId,
         req.forceRepair,
+        user.email,
       );
       return {
         success: true,
@@ -53,7 +54,7 @@ export class WhatsAppController {
         links: { self: `/v1/phone-number/${data.id}` },
       };
     }
-    const data = await this.whatsapp.startLogin(user.id, req);
+    const data = await this.whatsapp.startLogin(user.id, user.email, req);
     return {
       success: true,
       message: 'Phone number login started successfully',

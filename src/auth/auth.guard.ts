@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
+import { signInFailed, userSignedIn, userSignedUp } from '../activity/activity';
 import type { User } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { primaryEmail } from '../webhooks/webhooks.service';
@@ -54,6 +55,7 @@ export class ClerkAuthGuard implements CanActivate {
       this.logger.error(
         `resolving user for clerk id ${clerkId} failed: ${(err as Error).message}`,
       );
+      signInFailed(clerkId, (err as Error).message);
       throw new HttpException(
         fail('failed to resolve the authenticated user'),
         HttpStatus.INTERNAL_SERVER_ERROR,
@@ -71,6 +73,7 @@ export class ClerkAuthGuard implements CanActivate {
       );
     }
 
+    userSignedIn(clerkId, user.email);
     req.user = user;
     return true;
   }
@@ -85,11 +88,19 @@ export class ClerkAuthGuard implements CanActivate {
     const email = primaryEmail(clerkUser);
     if (!email) throw new Error(`clerk user ${clerkId} has no email address`);
     const username = clerkUser.username ?? null;
-    return this.prisma.user.upsert({
-      where: { oauthId: clerkId },
-      create: { oauthId: clerkId, email, username },
-      update: { email, username },
-    });
+    const user = await this.prisma.user
+      .upsert({
+        where: { oauthId: clerkId },
+        create: { oauthId: clerkId, email, username },
+        update: { email, username },
+      })
+      .catch((err: Error & { code?: string }) => {
+        throw err.code === 'P2002'
+          ? new Error(`${email} already belongs to another account`)
+          : err;
+      });
+    userSignedUp(clerkId, email);
+    return user;
   }
 }
 

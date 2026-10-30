@@ -17,6 +17,10 @@ const PAIRING_CODE_MS = 160_000;
 
 // What the server knows about a login that is still waiting for the phone.
 export type LoginState = {
+  email: string;
+  byCode: boolean;
+  // Set once the user has been given a QR or pairing code to use.
+  codeShown?: boolean;
   startedAt: number;
   qrAt?: number;
   qrCount: number;
