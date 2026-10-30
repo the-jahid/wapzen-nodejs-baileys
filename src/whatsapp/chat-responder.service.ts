@@ -9,10 +9,7 @@ import {
   type BaseMessage,
 } from '@langchain/core/messages';
 import { activity } from '../activity/activity';
-import {
-  DEFAULT_MODEL,
-  MAX_REPLIES_PER_AGENT,
-} from '../chat-agents/chat-agents.types';
+import { DEFAULT_MODEL } from '../chat-agents/chat-agents.types';
 import { recordChatTurn } from '../chat-conversations/chat-conversations.store';
 import type { ChatAgent, Tool } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -133,15 +130,18 @@ export class ChatResponderService {
       return '';
     }
 
-    // Take one reply from the agent's allowance before asking the model, so
+    // Take one reply from the account's allowance before asking the model, so
     // messages arriving together can't overshoot it. Handed back below if the
     // reply never goes out.
-    const { count } = await this.prisma.chatAgent.updateMany({
-      where: { id: agent.id, aiReplyCount: { lt: MAX_REPLIES_PER_AGENT } },
+    const { count } = await this.prisma.user.updateMany({
+      where: {
+        id: agent.userId,
+        aiReplyCount: { lt: this.prisma.user.fields.aiReplyLimit },
+      },
       data: { aiReplyCount: { increment: 1 } },
     });
     if (count === 0) {
-      this.logger.log(`chat agent ${agent.id} has used all its replies`);
+      this.logger.log(`user ${agent.userId} has used all their replies`);
       activity(
         `reply limit reached: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
       );
@@ -226,9 +226,9 @@ export class ChatResponderService {
     } finally {
       if (!sent) {
         await chat.setTyping(false).catch(() => undefined);
-        await this.prisma.chatAgent
+        await this.prisma.user
           .updateMany({
-            where: { id: agent.id, aiReplyCount: { gt: 0 } },
+            where: { id: agent.userId, aiReplyCount: { gt: 0 } },
             data: { aiReplyCount: { decrement: 1 } },
           })
           .catch(() => undefined);

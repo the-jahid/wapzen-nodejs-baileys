@@ -13,10 +13,10 @@ export const DEFAULT_TEMPERATURE = 0.3;
 export const DEFAULT_SYSTEM_PROMPT =
   'You are a helpful, friendly WhatsApp chat assistant.';
 
-// Account limits, enforced but never advertised (Go limits.go): the dashboard
-// learns about one only once it is reached.
-export const MAX_CHAT_AGENTS_PER_USER = 2;
-export const MAX_REPLIES_PER_AGENT = 200;
+// Account limit, enforced but never advertised: the dashboard learns about it
+// only once it is reached. The reply allowance is per account, in
+// users.ai_reply_limit.
+export const MAX_CHAT_AGENTS_PER_USER = 1;
 
 // The prompt is resent with every reply, so its length is capped (Go
 // MaxSystemPromptChars). Counted in code points after trimming, as stored.
@@ -45,20 +45,25 @@ export type ChatAgentResource = {
   prompt: { system_prompt: string };
   knowledge_base: { knowledge_base_ids: string[] };
   tools: { tool_ids: string[] };
-  // True once the agent has sent every reply it is allowed. Read-only.
+  // True once the account has sent every reply it is allowed. Read-only.
   reply_limit_reached: boolean;
 };
 
-// Attached tools, in the order they were attached.
-export const withTools = {
+// What a resource needs beyond the row: attached tools, in the order they were
+// attached, and the owner's reply allowance.
+export const resourceInclude = {
   tools: {
     select: { toolId: true },
     orderBy: [{ createdAt: 'asc' }, { toolId: 'asc' }],
   },
+  user: { select: { aiReplyCount: true, aiReplyLimit: true } },
 } satisfies Prisma.ChatAgentInclude;
 
 export function toResource(
-  row: ChatAgent & { tools?: { toolId: string }[] },
+  row: ChatAgent & {
+    tools: { toolId: string }[];
+    user: { aiReplyCount: number; aiReplyLimit: number };
+  },
 ): ChatAgentResource {
   return {
     id: row.id,
@@ -77,8 +82,8 @@ export function toResource(
     prompt: { system_prompt: row.systemPrompt },
     // Knowledge bases can't be attached to a chat agent on this server yet.
     knowledge_base: { knowledge_base_ids: [] },
-    tools: { tool_ids: (row.tools ?? []).map((t) => t.toolId) },
-    reply_limit_reached: row.aiReplyCount >= MAX_REPLIES_PER_AGENT,
+    tools: { tool_ids: row.tools.map((t) => t.toolId) },
+    reply_limit_reached: row.user.aiReplyCount >= row.user.aiReplyLimit,
   };
 }
 

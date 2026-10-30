@@ -20,6 +20,10 @@ model User {
   username  String?
   // An operator can block an account; setting this back to null unblocks it.
   blockedAt DateTime? @map("blocked_at") @db.Timestamptz
+  // Lifetime AI replies sent by the account's agents.
+  aiReplyCount Int    @default(0) @map("ai_reply_count")
+  // How many replies the account may send: 100 free, raised for a paid plan.
+  aiReplyLimit Int    @default(100) @map("ai_reply_limit")
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -47,7 +51,7 @@ model ChatAgent {
   // 0.1 – 1.0
   temperature   Float    @default(0.3) @map("model_temperature")
   systemPrompt  String   @default("You are a helpful, friendly WhatsApp chat assistant.") @map("prompt_system_prompt")
-  // Lifetime AI replies sent by this agent; checked against the reply cap.
+  // No longer written: the allowance lives on users since migration 00006.
   aiReplyCount  Int      @default(0) @map("ai_reply_count")
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz

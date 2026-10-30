@@ -14,8 +14,8 @@ import {
   normalizeIds,
   normalizeNullable,
   PHONE_NUMBER_REQUIRED,
+  resourceInclude,
   toResource,
-  withTools,
 } from './chat-agents.types';
 
 type Tx = Prisma.TransactionClient;
@@ -35,7 +35,7 @@ export class ChatAgentsService {
       this.prisma.chatAgent.count({ where: { userId } }),
       this.prisma.chatAgent.findMany({
         where: { userId },
-        include: withTools,
+        include: resourceInclude,
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip: (page - 1) * limit,
         take: limit,
@@ -47,7 +47,7 @@ export class ChatAgentsService {
   async get(userId: string, id: string): Promise<ChatAgentResource> {
     const row = await this.prisma.chatAgent.findFirst({
       where: { id, userId },
-      include: withTools,
+      include: resourceInclude,
     });
     if (!row) throw notFound();
     return toResource(row);
@@ -93,7 +93,7 @@ export class ChatAgentsService {
             req.prompt?.system_prompt?.trim() || DEFAULT_SYSTEM_PROMPT,
           tools: { create: attachmentRows(toolIds) },
         },
-        include: withTools,
+        include: resourceInclude,
       });
       return toResource(row);
     });
@@ -165,7 +165,7 @@ export class ChatAgentsService {
       const row = await tx.chatAgent.update({
         where: { id },
         data,
-        include: withTools,
+        include: resourceInclude,
       });
       return toResource(row);
     });
