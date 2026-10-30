@@ -1,0 +1,70 @@
+{
+  "info": {
+    "name": "WhiskeyBailey - Clerk webhook",
+    "description": "POST /api/webhooks/clerk with valid Svix headers. Set the collection variable clerkWebhookSecret to CLERK_WEBHOOK_SIGNING_SECRET from .env; the pre-request script signs every request with it.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "clerkWebhookSecret", "value": "whsec_PASTE_FROM_ENV" },
+    { "key": "clerkUserId", "value": "user_postman_test_1" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Svix signature: base64(HMAC-SHA256(key, id.timestamp.body)), key = base64 part of whsec_ secret.",
+          "const secret = pm.collectionVariables.get('clerkWebhookSecret');",
+          "const body = pm.variables.replaceIn(pm.request.body.raw);",
+          "const id = 'msg_postman_' + Date.now();",
+          "const ts = Math.floor(Date.now() / 1000).toString();",
+          "const key = CryptoJS.enc.Base64.parse(secret.replace(/^whsec_/, ''));",
+          "const sig = CryptoJS.HmacSHA256(id + '.' + ts + '.' + body, key).toString(CryptoJS.enc.Base64);",
+          "pm.request.headers.upsert({ key: 'svix-id', value: id });",
+          "pm.request.headers.upsert({ key: 'svix-timestamp', value: ts });",
+          "pm.request.headers.upsert({ key: 'svix-signature', value: 'v1,' + sig });"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "user.created",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/api/webhooks/clerk",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"user.created\",\n  \"data\": {\n    \"id\": \"{{clerkUserId}}\",\n    \"username\": \"postman\",\n    \"primary_email_address_id\": \"idn_1\",\n    \"email_addresses\": [\n      { \"id\": \"idn_1\", \"email_address\": \"postman-test@example.test\" }\n    ]\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "user.updated",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/api/webhooks/clerk",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"user.updated\",\n  \"data\": {\n    \"id\": \"{{clerkUserId}}\",\n    \"username\": \"postman-renamed\",\n    \"primary_email_address_id\": \"idn_1\",\n    \"email_addresses\": [\n      { \"id\": \"idn_1\", \"email_address\": \"postman-test2@example.test\" }\n    ]\n  }\n}"
+        }
+      }
+    },
+    {
+      "name": "user.deleted",
+      "request": {
+        "method": "POST",
+        "url": "{{baseUrl}}/api/webhooks/clerk",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"type\": \"user.deleted\",\n  \"data\": { \"id\": \"{{clerkUserId}}\", \"deleted\": true }\n}"
+        }
+      }
+    }
+  ]
+}

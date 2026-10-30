@@ -1,0 +1,248 @@
+// Prisma schema for whiskey-bailey-server.
+// Connection URLs live in prisma.config.ts (migrations) and
+// src/prisma/prisma.service.ts (runtime), both read from .env.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Mirrors the Go server's users table (migrations 00001 + 00059).
+model User {
+  id        String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  email     String    @unique
+  oauthId   String    @unique @map("oauth_id")
+  username  String?
+  // An operator can block an account; setting this back to null unblocks it.
+  blockedAt DateTime? @map("blocked_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  chatAgents        ChatAgent[]
+  phoneNumbers      PhoneNumber[]
+  chatConversations ChatConversation[]
+  knowledgeBases    KnowledgeBase[]
+  tools             Tool[]
+
+  @@map("users")
+}
+
+// Mirrors the Go server's chat_agents table (migrations 00047–00060).
+// CHECK constraints can't be expressed in Prisma; they live in the migration SQL.
+model ChatAgent {
+  id            String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId        String   @map("user_id")
+  agentName     String   @map("agent_name")
+  phoneNumberId String?  @unique @map("phone_number_id")
+  // 'active' | 'inactive'; an active agent must have a phone number.
+  status        String   @default("inactive")
+  // Chat agents are locked to Claude Haiku 4.5 (Go migration 00062).
+  modelProvider String   @default("anthropic") @map("model_provider")
+  modelName     String   @default("claude-haiku-4-5") @map("model_name")
+  // 0.1 – 1.0
+  temperature   Float    @default(0.3) @map("model_temperature")
+  systemPrompt  String   @default("You are a helpful, friendly WhatsApp chat assistant.") @map("prompt_system_prompt")
+  // Lifetime AI replies sent by this agent; checked against the reply cap.
+  aiReplyCount  Int      @default(0) @map("ai_reply_count")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phoneNumber   PhoneNumber?       @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+  conversations ChatConversation[]
+  tools         ChatAgentTool[]
+
+  @@unique([userId, agentName])
+  @@index([userId])
+  @@map("chat_agents")
+}
+
+// Mirrors the Go server's phone_numbers table: one linked WhatsApp number.
+model PhoneNumber {
+  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId          String    @map("user_id")
+  // E.164, e.g. +15551234567. Filled in from WhatsApp once linked.
+  phoneNumber     String?   @map("phone_number")
+  label           String?
+  // The linked device's WhatsApp id, e.g. 15551234567:1@s.whatsapp.net
+  waJid           String?   @unique @map("wa_jid")
+  // 'pending_qr' | 'connected' | 'disconnected'
+  status          String    @default("pending_qr")
+  // The current QR code text while a QR login is waiting to be scanned.
+  qrCode          String?   @map("qr_code")
+  lastConnectedAt DateTime? @map("last_connected_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chatAgent     ChatAgent?
+  authValues    WhatsAppAuth[]
+  conversations ChatConversation[]
+
+  @@unique([userId, phoneNumber])
+  @@index([userId])
+  @@map("phone_numbers")
+}
+
+// Baileys auth state for one phone number: the "creds" row plus every signal
+// key, one row per entry (what useMultiFileAuthState would write as files).
+model WhatsAppAuth {
+  phoneNumberId String   @map("phone_number_id")
+  // "creds", or "<type>-<id>" for a signal key
+  key           String
+  // JSON encoded with Baileys' BufferJSON
+  value         String
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  phoneNumber PhoneNumber @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+
+  @@id([phoneNumberId, key])
+  @@map("whatsapp_auth")
+}
+
+// Mirrors the Go server's chat_conversations table (migration 00054): one
+// saved WhatsApp thread between a number and a contact. The thread belongs to
+// the number, not the agent; chatAgentId is whoever answered last. The unique
+// (phone_number_id, peer_jid) index is partial, so it lives in the migration
+// SQL, with the CHECKs and the trigger that keeps messageCount,
+// lastMessageRole and lastMessageAt in step with chat_messages.
+model ChatConversation {
+  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId          String    @map("user_id")
+  phoneNumberId   String?   @map("phone_number_id")
+  chatAgentId     String?   @map("chat_agent_id")
+  // The contact's WhatsApp JID as the message arrived, often "<lid>@lid".
+  peerJid         String    @map("peer_jid")
+  // E.164 when known; an "@lid" peer may have none.
+  peerPhone       String?   @map("peer_phone")
+  peerName        String?   @map("peer_name")
+  // 'open' | 'closed'
+  status          String    @default("open")
+  messageCount    Int       @default(0) @map("message_count")
+  // 'user' | 'assistant'
+  lastMessageRole String?   @map("last_message_role")
+  lastMessageAt   DateTime? @map("last_message_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phoneNumber PhoneNumber?  @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+  chatAgent   ChatAgent?    @relation(fields: [chatAgentId], references: [id], onDelete: SetNull)
+  messages    ChatMessage[]
+
+  @@index([userId, lastMessageAt(sort: Desc)])
+  @@index([chatAgentId])
+  @@map("chat_conversations")
+}
+
+// One turn of a saved thread: role 'user' is the contact, 'assistant' is the
+// agent (or a person replying from the dashboard). Ordered by seq, since two
+// quick turns can share a createdAt.
+model ChatMessage {
+  id             String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  conversationId String   @map("conversation_id")
+  seq            Int
+  role           String
+  content        String
+  // The inbound WhatsApp message id, so a redelivery isn't saved twice.
+  waMessageId    String?  @map("wa_message_id")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  conversation ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, seq])
+  @@map("chat_messages")
+}
+
+// Mirrors the Go server's knowledge_bases table (migrations 00031–00032). The
+// sources' embeddings live in Pinecone under pineconeNamespace
+// ('kb_' + the id without dashes, set on create). Status follows indexing:
+// 'in_progress' | 'complete' | 'error' | 'refreshing_in_progress'. The name
+// length, chunk-size bounds and min <= max are CHECKs in the migration SQL.
+model KnowledgeBase {
+  id                String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId            String    @map("user_id")
+  name              String    @map("knowledge_base_name")
+  status            String    @default("in_progress")
+  enableAutoRefresh Boolean   @default(false) @map("enable_auto_refresh")
+  lastRefreshedAt   DateTime? @map("last_refreshed_at") @db.Timestamptz
+  maxChunkSize      Int       @default(2000) @map("max_chunk_size")
+  minChunkSize      Int       @default(400) @map("min_chunk_size")
+  pineconeNamespace String?   @unique @map("pinecone_namespace")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  user    User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sources KnowledgeBaseSource[]
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("knowledge_bases")
+}
+
+// Mirrors the Go server's knowledge_base_sources table (migrations 00033–00035).
+// The title is the source's Pinecone record id, hence unique per knowledge
+// base; chunkCount is how many vectors it wrote, so the ids can be rebuilt
+// from the row. content is kept to re-chunk later and is never returned.
+model KnowledgeBaseSource {
+  id              String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  knowledgeBaseId String   @map("knowledge_base_id")
+  // 'text' | 'file'
+  type            String   @default("text")
+  title           String
+  content         String
+  chunkCount      Int      @default(0) @map("chunk_count")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  knowledgeBase KnowledgeBase @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+
+  @@unique([knowledgeBaseId, title])
+  @@index([knowledgeBaseId, createdAt])
+  @@map("knowledge_base_sources")
+}
+
+// Mirrors the Go server's tools table (migrations 00042 + 00053): an action a
+// chat agent can take mid-conversation, 'api_request' | 'send_text' (chat
+// only). The settings for the type live in config as one JSON block, replaced
+// wholesale on update. The name pattern, type and description length are
+// CHECKs in the migration SQL.
+model Tool {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId      String   @map("user_id")
+  type        String
+  // The function name the model calls.
+  name        String   @map("tool_name")
+  description String
+  config      Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attachments ChatAgentTool[]
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("tools")
+}
+
+// Which tools a chat agent offers. A tool is shared, so one definition can be
+// attached to any number of chat agents; deleting either side removes the
+// row. createdAt is the attachment order.
+model ChatAgentTool {
+  chatAgentId String   @map("chat_agent_id")
+  toolId      String   @map("tool_id")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  chatAgent ChatAgent @relation(fields: [chatAgentId], references: [id], onDelete: Cascade)
+  tool      Tool      @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  @@id([chatAgentId, toolId])
+  @@index([toolId])
+  @@map("chat_agent_tools")
+}

@@ -1,0 +1,41 @@
+# Render blueprint. Secrets are sync: false, so Render asks for them on the
+# first deploy and never reads them from this file.
+services:
+  - type: web
+    name: whiskey-bailey-server
+    runtime: node
+    region: frankfurt
+    # 2 GB: start:prod caps the heap at 1536 MB, which a 512 MB plan would OOM.
+    plan: standard
+    # Exactly one instance: two would open competing sockets for every number.
+    numInstances: 1
+    buildCommand: npm ci && npm run build
+    preDeployCommand: npx prisma migrate deploy
+    # node directly, not npm run start:prod (npm's parent process costs ~50 MB).
+    startCommand: node --max-old-space-size=1536 --max-semi-space-size=32 dist/main
+    healthCheckPath: /
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CLERK_WEBHOOK_SIGNING_SECRET
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_EMBEDDING_MODEL
+        value: text-embedding-3-large
+      - key: PINECONE_API_KEY
+        sync: false
+      - key: PINECONE_INDEX_NAME
+        value: voice
+      - key: PINECONE_INDEX_DIMENSION
+        value: "3072"
+      - key: PINECONE_INDEX_HOST
+        sync: false
+      - key: VERBOSE_LOGS
+        value: "false"
