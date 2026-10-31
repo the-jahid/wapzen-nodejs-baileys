@@ -1,6 +1,11 @@
 import { HttpStatus } from '@nestjs/common';
 import type { Order } from '../generated/prisma/client';
 import {
+  DEFAULT_ORDER_FIELDS,
+  isBuiltInField,
+  type OrderField,
+} from './order-tool';
+import {
   apiError,
   invalidBody,
   isObject,
@@ -35,6 +40,7 @@ const MAX_ITEMS = 50;
 const MAX_ITEM_NAME_LENGTH = 200;
 const MAX_ITEM_NOTE_LENGTH = 500;
 const MAX_NOTE_LENGTH = 2000;
+const MAX_CUSTOM_VALUE_LENGTH = 500;
 const MAX_INT = 2_147_483_647;
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -45,6 +51,10 @@ const PLACEHOLDER = /^(n\/?a|none|null|unknown|not provided|-+)$/i;
 
 export type OrderItem = { name: string; quantity?: number; note?: string };
 
+// A value for a field the owner added. It keeps the label it was collected
+// under, so deleting or renaming the field later leaves the order readable.
+export type OrderCustomField = { key: string; label: string; value: string };
+
 // An order after validation, ready to be stored.
 export type NewOrder = {
   customerName: string;
@@ -53,6 +63,7 @@ export type NewOrder = {
   description: string;
   items: OrderItem[];
   deliveryAddress: string | null;
+  customFields: OrderCustomField[];
 };
 
 export type OrderFilter = {
@@ -83,6 +94,7 @@ export function toResource(row: OrderRow) {
     description: row.description,
     items: row.items as OrderItem[],
     delivery_address: row.deliveryAddress,
+    custom_fields: row.customFields as OrderCustomField[],
     status: row.status,
     channel: row.channel,
     internal_note: row.internalNote,
@@ -145,30 +157,41 @@ function callingCode(e164: string) {
 
 // Checks create_order's arguments, which come from the model. Every problem is
 // named, so the agent can ask for the right thing instead of failing silently.
+// Only the owner's fields are read: the rest stay empty, except what the chat
+// itself knows, the sender's number and WhatsApp name.
 export function parseOrderArgs(
   args: Record<string, unknown>,
-  context: { customerPhone?: string | null; agentPhone?: string | null },
+  context: {
+    customerPhone?: string | null;
+    agentPhone?: string | null;
+    peerName?: string | null;
+  },
+  fields: OrderField[] = DEFAULT_ORDER_FIELDS,
 ): { order?: NewOrder; errors: FieldError[] } {
   const errors: FieldError[] = [];
   const { customerPhone, agentPhone } = context;
+  const field = (key: string) => fields.find((f) => f.key === key);
+  const value = (key: string) => (field(key) ? args[key] : undefined);
 
-  const customerName = text(args.customer_name);
+  const customerName = text(value('customer_name'));
   if (!customerName) {
-    errors.push({
-      field: 'customer_name',
-      message: "ask for the customer's name",
-    });
+    if (field('customer_name')?.required) {
+      errors.push({
+        field: 'customer_name',
+        message: "ask for the customer's name",
+      });
+    }
   } else if (customerName.length > MAX_NAME_LENGTH) {
     errors.push({ field: 'customer_name', message: 'the name is too long' });
   }
 
   // Only something with digits in it counts as a number they gave.
-  const given = text(args.phone);
+  const given = text(value('phone'));
   const hasNumber = /\d/.test(given);
   const phone = hasNumber
     ? toE164(given, customerPhone ?? agentPhone)
     : (customerPhone ?? null);
-  if (!phone) {
+  if (!phone && (hasNumber || field('phone')?.required)) {
     errors.push({
       field: 'phone',
       message: hasNumber
@@ -177,7 +200,10 @@ export function parseOrderArgs(
     });
   }
 
-  const email = optionalText(args.email);
+  const email = optionalText(value('email'));
+  if (!email && field('email')?.required) {
+    errors.push({ field: 'email', message: 'ask for the email address' });
+  }
   if (email && (email.length > MAX_EMAIL_LENGTH || !EMAIL.test(email))) {
     errors.push({
       field: 'email',
@@ -186,12 +212,14 @@ export function parseOrderArgs(
     });
   }
 
-  const description = text(args.description);
+  const description = text(value('description'));
   if (!description) {
-    errors.push({
-      field: 'description',
-      message: 'ask what the customer wants to order',
-    });
+    if (field('description')?.required) {
+      errors.push({
+        field: 'description',
+        message: 'ask what the customer wants to order',
+      });
+    }
   } else if (description.length > MAX_DESCRIPTION_LENGTH) {
     errors.push({
       field: 'description',
@@ -199,27 +227,75 @@ export function parseOrderArgs(
     });
   }
 
-  const deliveryAddress = optionalText(args.delivery_address);
-  if (deliveryAddress && deliveryAddress.length > MAX_ADDRESS_LENGTH) {
+  const deliveryAddress = optionalText(value('delivery_address'));
+  if (!deliveryAddress && field('delivery_address')?.required) {
+    errors.push({
+      field: 'delivery_address',
+      message: 'ask for the delivery address',
+    });
+  } else if (deliveryAddress && deliveryAddress.length > MAX_ADDRESS_LENGTH) {
     errors.push({
       field: 'delivery_address',
       message: 'the address is too long',
     });
   }
 
-  const items = parseItems(args.items, errors);
+  const items = parseItems(value('items'), errors);
+  if (!items.length && field('items')?.required && !errors.length) {
+    errors.push({ field: 'items', message: 'ask which items they want' });
+  }
+
+  const customFields = parseCustomFields(args, fields, errors);
+
+  // With every field optional, an order could otherwise be nothing at all.
+  if (
+    !errors.length &&
+    !customerName &&
+    !description &&
+    !items.length &&
+    !deliveryAddress &&
+    !email &&
+    !customFields.length
+  ) {
+    errors.push({
+      field: 'order',
+      message: 'nothing was collected: ask what the customer wants to order',
+    });
+  }
+
   if (errors.length) return { errors };
   return {
     errors,
     order: {
-      customerName,
-      phone: phone!,
+      customerName: customerName || context.peerName?.trim() || '',
+      phone: phone ?? '',
       email: email ? email.toLowerCase() : null,
       description,
       items,
       deliveryAddress,
+      customFields,
     },
   };
+}
+
+function parseCustomFields(
+  args: Record<string, unknown>,
+  fields: OrderField[],
+  errors: FieldError[],
+): OrderCustomField[] {
+  const values: OrderCustomField[] = [];
+  for (const { key, label, required } of fields) {
+    if (isBuiltInField(key)) continue;
+    const value = optionalText(args[key]);
+    if (!value) {
+      if (required) errors.push({ field: key, message: `ask for ${label}` });
+    } else if (value.length > MAX_CUSTOM_VALUE_LENGTH) {
+      errors.push({ field: key, message: `${label} is too long` });
+    } else {
+      values.push({ key, label, value });
+    }
+  }
+  return values;
 }
 
 function parseItems(raw: unknown, errors: FieldError[]): OrderItem[] {
@@ -277,6 +353,7 @@ export function fingerprint(order: NewOrder) {
     order.phone,
     norm(order.deliveryAddress),
     items.length ? items : norm(order.description),
+    order.customFields.map((field) => `${field.key}=${norm(field.value)}`),
   ]);
 }
 
@@ -404,6 +481,7 @@ const CSV_COLUMNS: [string, (row: ReturnType<typeof toResource>) => unknown][] =
     ['Description', (o) => csvText(o.description)],
     ['Items', (o) => csvText(itemsLine(o.items))],
     ['Delivery address', (o) => csvText(o.delivery_address)],
+    ['Other details', (o) => csvText(customLine(o.custom_fields))],
     ['Agent', (o) => csvText(o.agent_name)],
     ['Status', (o) => o.status],
     ['Channel', (o) => o.channel],
@@ -422,6 +500,10 @@ export function ordersCsv(orders: ReturnType<typeof toResource>[]) {
     ].join('\r\n') +
     '\r\n'
   );
+}
+
+function customLine(fields: OrderCustomField[]) {
+  return fields.map((field) => `${field.label}: ${field.value}`).join('; ');
 }
 
 function itemsLine(items: OrderItem[]) {

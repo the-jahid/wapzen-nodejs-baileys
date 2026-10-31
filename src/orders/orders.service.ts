@@ -4,6 +4,7 @@ import { ensureConversation } from '../chat-conversations/chat-conversations.sto
 import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { FieldError } from '../tools/tools.types';
+import { DEFAULT_ORDER_FIELDS, type OrderField } from './order-tool';
 import {
   fingerprint,
   MAX_EXPORT_ROWS,
@@ -13,6 +14,7 @@ import {
   parseOrderArgs,
   toResource,
   type NewOrder,
+  type OrderCustomField,
   type OrderFilter,
   type OrderItem,
   type OrderUpdate,
@@ -59,8 +61,9 @@ export class OrdersService {
   async place(
     context: OrderContext,
     args: Record<string, unknown>,
+    fields: OrderField[] = DEFAULT_ORDER_FIELDS,
   ): Promise<OrderResult> {
-    const { order, errors } = parseOrderArgs(args, context);
+    const { order, errors } = parseOrderArgs(args, context, fields);
     if (!order) {
       return {
         success: false,
@@ -123,8 +126,11 @@ export class OrdersService {
       });
       const same = recent.find(
         (row) =>
-          fingerprint({ ...row, items: row.items as OrderItem[] }) ===
-          fingerprint(order),
+          fingerprint({
+            ...row,
+            items: row.items as OrderItem[],
+            customFields: row.customFields as OrderCustomField[],
+          }) === fingerprint(order),
       );
       if (same) {
         return { id: same.id, orderNumber: same.orderNumber, created: false };

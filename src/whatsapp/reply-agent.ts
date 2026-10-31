@@ -18,15 +18,16 @@ const CONFIRMATION_MAX_TOKENS = 60;
 const CONFIRMATION_TURNS = 6;
 
 const CONFIRMATION_FUNCTION = 'order_decision';
-const CONFIRMATION_PROMPT = [
-  "You read a WhatsApp chat between a business's assistant and a customer. Set confirmed to true only if all of these hold:",
-  "1. The assistant's last message sets out the whole order and asks whether to place it.",
-  '2. Nothing the order needs is missing: what they want, their name, and whatever the business asks for below.',
-  "3. The customer's last message is a plain yes to that, in any language.",
-  'Customer messages that are a yes: "yes", "ok", "correct, place it", "go ahead", "হ্যাঁ", "ঠিক আছে", "জি".',
-  'Customer messages that are not a yes, so confirmed is false: "Ayesha Rahman", "House 5, Road 3, Banani", "no", "no wait, make it one pepperoni instead", "add garlic bread", "how much is it?".',
-  "If the assistant's last message gave an order number, that order is done, so confirmed is false.",
-].join('\n');
+const confirmationPrompt = (details: string[]) =>
+  [
+    "You read a WhatsApp chat between a business's assistant and a customer. Set confirmed to true only if all of these hold:",
+    "1. The assistant's last message sets out the whole order and asks whether to place it.",
+    `2. Nothing the order needs is missing: ${[...details, 'whatever the business asks for below'].join(', ')}.`,
+    "3. The customer's last message is a plain yes to that, in any language.",
+    'Customer messages that are a yes: "yes", "ok", "correct, place it", "go ahead", "হ্যাঁ", "ঠিক আছে", "জি".',
+    'Customer messages that are not a yes, so confirmed is false: "Ayesha Rahman", "House 5, Road 3, Banani", "no", "no wait, make it one pepperoni instead", "add garlic bread", "how much is it?".',
+    "If the assistant's last message gave an order number, that order is done, so confirmed is false.",
+  ].join('\n');
 
 // What one reply brings to the agent, which itself is shared by every chat.
 export type ReplyContext = {
@@ -130,7 +131,9 @@ export function createConfirmationCheck(apiKey: string) {
     turns: { role: 'user' | 'assistant'; text: string }[],
     text: string,
     instructions: string,
+    details: string[],
   ) => {
+    const prompt = confirmationPrompt(details);
     const chat = [...turns.slice(-CONFIRMATION_TURNS)]
       .map((t) => `${t.role === 'user' ? 'Customer' : 'Assistant'}: ${t.text}`)
       .concat(`Customer: ${text}`)
@@ -139,8 +142,8 @@ export function createConfirmationCheck(apiKey: string) {
     const reply = await model.invoke([
       new SystemMessage(
         business
-          ? `${CONFIRMATION_PROMPT}\n\nThe business's order instructions:\n${business}`
-          : CONFIRMATION_PROMPT,
+          ? `${prompt}\n\nThe business's order instructions:\n${business}`
+          : prompt,
       ),
       new HumanMessage(chat),
     ]);

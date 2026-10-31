@@ -19,6 +19,8 @@ import {
 import { IndexerService } from '../knowledge-bases/indexer.service';
 import {
   ORDER_FUNCTION,
+  requiredDetails,
+  type OrderField,
   ORDERS_OFF_PROMPT,
   orderPrompt,
 } from '../orders/order-tool';
@@ -210,7 +212,11 @@ export class ChatResponderService {
         agent.systemPrompt.trim(),
         toolbox?.instructions(),
         toolbox?.takesOrders
-          ? orderPrompt(agent.orderInstructions, toolbox.phoneKnown)
+          ? orderPrompt(
+              agent.orderInstructions,
+              toolbox.phoneKnown,
+              toolbox.orderFields,
+            )
           : agent.tools.some((t) => t.tool.type === 'order')
             ? ORDERS_OFF_PROMPT
             : undefined,
@@ -230,7 +236,13 @@ export class ChatResponderService {
       ];
       const confirmed =
         !!toolbox?.takesOrders &&
-        (await this.orderConfirmed(apiKey, key, chat.text, agent));
+        (await this.orderConfirmed(
+          apiKey,
+          key,
+          chat.text,
+          agent,
+          toolbox.orderFields,
+        ));
       if (confirmed) toolbox.confirmOrder();
       const generated = await this.generate(apiKey, messages, {
         prompt,
@@ -294,7 +306,7 @@ export class ChatResponderService {
     ]);
     return {
       phoneKnown: !!peerPhone,
-      place: (args) =>
+      place: (args, fields) =>
         this.orders.place(
           {
             userId: agent.userId,
@@ -308,6 +320,7 @@ export class ChatResponderService {
             agentPhone: agent.phoneNumber?.phoneNumber,
           },
           args,
+          fields,
         ),
     };
   }
@@ -320,12 +333,18 @@ export class ChatResponderService {
     key: string,
     text: string,
     agent: ReplyingAgent,
+    fields: OrderField[],
   ) {
     const turns = this.recent(key);
     if (!turns.some((turn) => turn.role === 'assistant')) return false;
     this.confirmationCheck ??= createConfirmationCheck(apiKey);
     try {
-      return await this.confirmationCheck(turns, text, agent.orderInstructions);
+      return await this.confirmationCheck(
+        turns,
+        text,
+        agent.orderInstructions,
+        requiredDetails(fields),
+      );
     } catch (err) {
       this.logger.warn(`order check failed: ${(err as Error).message}`);
       return false;

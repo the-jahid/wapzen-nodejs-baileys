@@ -4,6 +4,7 @@ import {
   ORDER_FUNCTION,
   ORDER_FUNCTION_DESCRIPTION,
   orderParameters,
+  type OrderField,
 } from '../orders/order-tool';
 import type { OrderResult } from '../orders/orders.service';
 import { argumentToString, parameterSchema, runApiRequest } from './runner';
@@ -29,7 +30,10 @@ export type ToolDefinition = {
 export type ChatOrders = {
   // True when the sender's number is known, so the model needn't supply one.
   phoneKnown: boolean;
-  place: (args: Record<string, unknown>) => Promise<OrderResult>;
+  place: (
+    args: Record<string, unknown>,
+    fields: OrderField[],
+  ) => Promise<OrderResult>;
 };
 
 export class ChatToolbox {
@@ -89,6 +93,11 @@ export class ChatToolbox {
     return this.orders?.phoneKnown ?? false;
   }
 
+  // What the owner has Take Order collect, when this reply can place an order.
+  get orderFields(): OrderField[] {
+    return this.byName.get(ORDER_FUNCTION)?.orderFields ?? [];
+  }
+
   // The stored name and description are passed through untouched: they are
   // prompt text, and the model decides whether to call a tool on them alone.
   definitions(): ToolDefinition[] {
@@ -99,7 +108,7 @@ export class ChatToolbox {
         description: tool.description,
         parameters:
           tool.type === 'order'
-            ? orderParameters(this.phoneKnown)
+            ? orderParameters(this.phoneKnown, this.orderFields)
             : parameterSchema(tool),
       },
     }));
@@ -168,7 +177,7 @@ export class ChatToolbox {
           'The order was not placed: the customer has not confirmed it yet. Set out the whole order and ask if you should place it.',
       });
     }
-    this.placed ??= orders.place(args).then((result) => {
+    this.placed ??= orders.place(args, this.orderFields).then((result) => {
       if (!result.success) this.placed = undefined;
       return result;
     });

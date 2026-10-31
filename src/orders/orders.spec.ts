@@ -9,7 +9,17 @@ import { PrismaClient } from '../generated/prisma/client';
 import { ToolsController } from '../tools/tools.controller';
 import { ChatToolbox } from '../tools/chat-toolbox';
 import { ToolsService } from '../tools/tools.service';
-import { ORDER_FUNCTION, orderParameters } from './order-tool';
+import {
+  parseOrderFields,
+  toResource as toolResource,
+} from '../tools/tools.types';
+import {
+  DEFAULT_ORDER_FIELDS,
+  ORDER_FUNCTION,
+  orderParameters,
+  orderPrompt,
+  requiredDetails,
+} from './order-tool';
 import { OrdersService, type OrderContext } from './orders.service';
 import {
   cleanText,
@@ -39,13 +49,14 @@ let prisma: PrismaClient;
 let orders: OrdersService;
 let tools: ToolsService;
 
-async function migrate(until?: string) {
+async function migrate(until?: string, from = '') {
   const names = readdirSync(MIGRATIONS, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort();
   for (const name of names) {
     if (until && name >= until) break;
+    if (name < from) continue;
     await pg.exec(
       readFileSync(join(MIGRATIONS, name, 'migration.sql'), 'utf8'),
     );
@@ -114,6 +125,7 @@ beforeAll(async () => {
       'utf8',
     ),
   );
+  await migrate(undefined, '20261031000004');
 
   server = new PGLiteSocketServer({ db: pg, port: PORT, host: '127.0.0.1' });
   await server.start();
@@ -756,6 +768,7 @@ describe('list and export', () => {
       description: '@SUM(1)',
       items: [],
       deliveryAddress: null,
+      customFields: [{ key: 'note', label: 'Note', value: '=1+1' }],
       status: 'new',
       channel: 'chat',
       internalNote: null,
@@ -767,5 +780,151 @@ describe('list and export', () => {
     expect(csv).toContain(`"'=HYPERLINK(""http://evil"",""click"")"`);
     expect(csv).toContain(`"'@SUM(1)"`);
     expect(csv).toContain('"+8801712345678"');
+    expect(csv).toContain('"Note: =1+1"');
+  });
+});
+
+describe('order fields', () => {
+  const table = { key: 'table_number', label: 'Table number', required: true };
+  const notes = { key: 'notes', label: 'Notes', required: false };
+  const name = { key: 'customer_name', label: 'Name', required: false };
+
+  it('offers the model exactly the owner fields', () => {
+    const parameters = orderParameters(true, [table, notes]);
+    expect(Object.keys(parameters.properties)).toEqual([
+      'table_number',
+      'notes',
+    ]);
+    expect(parameters.required).toEqual(['table_number']);
+  });
+
+  it('asks for what is required and offers what the owner added', () => {
+    const prompt = orderPrompt('', true, [table, notes]);
+    expect(prompt).toContain(
+      'one at a time: Table number, anything the instructions',
+    );
+    expect(prompt).toContain('Also ask once for: Notes.');
+    expect(prompt).not.toContain('the name');
+    expect(prompt).not.toContain('what they want');
+  });
+
+  it('keeps the prompt for an account that changed nothing', () => {
+    expect(requiredDetails(DEFAULT_ORDER_FIELDS)).toEqual([
+      'the name',
+      'what they want',
+    ]);
+  });
+
+  it('places an order without the fields the owner deleted', () => {
+    const { order, errors } = parseOrderArgs(
+      { customer_name: 'ignored', email: 'a@b.co', table_number: '7' },
+      { customerPhone: '+8801700000000', peerName: 'Sam' },
+      [table, notes],
+    );
+    expect(errors).toEqual([]);
+    expect(order).toMatchObject({
+      customerName: 'Sam',
+      phone: '+8801700000000',
+      email: null,
+      description: '',
+      customFields: [
+        { key: 'table_number', label: 'Table number', value: '7' },
+      ],
+    });
+  });
+
+  it('holds a required field the owner added', () => {
+    const { errors } = parseOrderArgs(
+      { notes: 'none' },
+      { customerPhone: '+8801700000000' },
+      [table, notes],
+    );
+    expect(errors).toEqual([
+      { field: 'table_number', message: 'ask for Table number' },
+    ]);
+  });
+
+  it('refuses an order with nothing in it', () => {
+    const { order, errors } = parseOrderArgs(
+      {},
+      { customerPhone: '+8801700000000' },
+      [name],
+    );
+    expect(order).toBeUndefined();
+    expect(errors[0].field).toBe('order');
+  });
+
+  it('gives a new field a key, and brings a deleted one back by name', () => {
+    const fields = parseOrderFields({
+      fields: [
+        { key: 'customer_name', label: 'Customer name', required: true },
+        { label: 'Table  number', required: true },
+        { label: 'Delivery address' },
+        { label: 'টেবিল' },
+        { label: 'নোট' },
+      ],
+    });
+    expect(fields.map((f) => f.key)).toEqual([
+      'customer_name',
+      'table_number',
+      'delivery_address',
+      'field_2',
+      'field_3',
+    ]);
+    expect(fields[1].label).toBe('Table number');
+  });
+
+  it('refuses an empty list, a blank name and a repeated name', () => {
+    const errorsOf = (fields: unknown[]) => {
+      try {
+        parseOrderFields({ fields });
+        return [];
+      } catch (err) {
+        const body = (err as HttpException).getResponse() as {
+          errors: { field: string }[];
+        };
+        return body.errors.map((e) => e.field);
+      }
+    };
+    expect(errorsOf([])).toEqual(['fields']);
+    expect(errorsOf([{ label: ' ' }])).toEqual(['fields[0].label']);
+    expect(errorsOf([{ label: 'Size' }, { label: 'size' }])).toEqual([
+      'fields[1].label',
+    ]);
+  });
+
+  it('stores the list per account and uses it when placing', async () => {
+    const a = await newAccount('fields');
+    const tool = await prisma.tool.findFirstOrThrow({
+      where: { userId: a.user.id, type: 'order' },
+    });
+    expect(toolResource(tool).order?.fields).toEqual(DEFAULT_ORDER_FIELDS);
+
+    const saved = await tools.setOrderFields(a.user.id, tool.id, [table]);
+    expect(saved.order?.fields).toEqual([table]);
+
+    const result = await orders.place(
+      contextFor(a.user.id, a.agent.id, a.phone.id),
+      { table_number: '7' },
+      [table],
+    );
+    expect(result.success).toBe(true);
+    const order = await prisma.order.findFirstOrThrow({
+      where: { userId: a.user.id },
+    });
+    expect(order.customFields).toEqual([
+      { key: 'table_number', label: 'Table number', value: '7' },
+    ]);
+  });
+
+  it("can't set fields on another account's tool", async () => {
+    const a = await newAccount('fields-owner');
+    const b = await newAccount('fields-other');
+    const tool = await prisma.tool.findFirstOrThrow({
+      where: { userId: a.user.id, type: 'order' },
+    });
+    await expect(
+      tools.setOrderFields(b.user.id, tool.id, [table]),
+    ).rejects.toThrow('tool not found');
   });
 });

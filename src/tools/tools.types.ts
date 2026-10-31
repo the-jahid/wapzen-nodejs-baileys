@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import type { Tool } from '../generated/prisma/client';
+import { DEFAULT_ORDER_FIELDS, type OrderField } from '../orders/order-tool';
 
 // Wire types and validation for /v1/tools, ported from the Go server's
 // handlers/tool_handler.go and models/tool.go so both servers accept and
@@ -27,12 +28,17 @@ const MAX_PARAMETERS = 20;
 const MAX_PARAMETER_NAME_LENGTH = 64;
 const MAX_URL_LENGTH = 2000;
 const MAX_MESSAGE_LENGTH = 1000;
+const MAX_ORDER_FIELDS = 20;
+const MAX_ORDER_FIELD_LABEL_LENGTH = 60;
+const MAX_ORDER_FIELD_KEY_LENGTH = 40;
 
 // Mirrors the tools.tool_name CHECK: what both OpenAI and Anthropic accept as
 // a function name. Checked here so a bad name is a field error, not a 500.
 const NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 // The function the built-in Take Order tool reaches the model as.
 const RESERVED_NAME = 'create_order';
+// What the model sees an order field as, so it must suit a parameter name.
+const ORDER_FIELD_KEY = /^[a-z][a-z0-9_]*$/;
 
 export type ToolParameter = {
   name: string;
@@ -74,6 +80,7 @@ export type ResolvedTool = {
   isSystem: boolean;
   apiRequest?: ApiRequestConfig;
   sendText?: SendTextConfig;
+  orderFields?: OrderField[];
 };
 
 // Tool in the contract. Only the block matching the type is present, so a
@@ -92,6 +99,7 @@ export function toResource(
     chat_agent_ids: (row.attachments ?? []).map((a) => a.chatAgentId),
     ...(tool.apiRequest ? { api_request: tool.apiRequest } : {}),
     ...(tool.sendText ? { send_text: tool.sendText } : {}),
+    ...(tool.orderFields ? { order: { fields: tool.orderFields } } : {}),
     created_at: row.createdAt.toISOString(),
     updated_at: row.updatedAt.toISOString(),
   };
@@ -125,6 +133,9 @@ export function resolve(row: Tool): ResolvedTool {
     };
   } else if (row.type === 'send_text') {
     tool.sendText = { body: (config.body as string) ?? '' };
+  } else if (row.type === 'order') {
+    tool.orderFields =
+      (config.fields as OrderField[] | undefined) ?? DEFAULT_ORDER_FIELDS;
   }
   return tool;
 }
@@ -158,6 +169,79 @@ export function systemTool() {
     HttpStatus.FORBIDDEN,
     "this is a built-in tool: it can't be edited or deleted. Set its order instructions on the agent",
   );
+}
+
+// The body of PUT /:tool_id/order-fields: the whole list, in order. A field
+// without a key is new and gets one from its label, so typing a built-in
+// field's name back in restores that field.
+export function parseOrderFields(body: unknown): OrderField[] {
+  const raw = requireObject(body).fields;
+  if (!Array.isArray(raw)) throw invalidBody();
+  const fields = raw.map((f: unknown) => {
+    if (!isObject(f)) throw invalidBody();
+    return {
+      key: optional(f, 'key', 'string')?.trim() ?? '',
+      label: (optional(f, 'label', 'string') ?? '').replace(/\s+/g, ' ').trim(),
+      required: optional(f, 'required', 'boolean') ?? false,
+    };
+  });
+
+  const errors: FieldError[] = [];
+  if (!fields.length || fields.length > MAX_ORDER_FIELDS) {
+    errors.push({
+      field: 'fields',
+      message: `keep between 1 and ${MAX_ORDER_FIELDS} fields`,
+    });
+  }
+  const labels = new Set<string>();
+  const keys = new Set<string>();
+  fields.forEach((f, i) => {
+    const field = `fields[${i}]`;
+    if (!f.label || f.label.length > MAX_ORDER_FIELD_LABEL_LENGTH) {
+      errors.push({
+        field: `${field}.label`,
+        message: `a field needs a name of at most ${MAX_ORDER_FIELD_LABEL_LENGTH} characters`,
+      });
+    } else if (labels.has(f.label.toLowerCase())) {
+      errors.push({
+        field: `${field}.label`,
+        message: `there are two fields named ${f.label}`,
+      });
+    }
+    labels.add(f.label.toLowerCase());
+    if (!f.key) return;
+    if (
+      !ORDER_FIELD_KEY.test(f.key) ||
+      f.key.length > MAX_ORDER_FIELD_KEY_LENGTH ||
+      keys.has(f.key)
+    ) {
+      errors.push({ field: `${field}.key`, message: 'invalid field key' });
+    }
+    keys.add(f.key);
+  });
+  if (errors.length) throw validationFailed(errors);
+
+  return fields.map((f) => {
+    if (f.key) return f;
+    const key = keyForLabel(f.label, keys);
+    keys.add(key);
+    return { ...f, key };
+  });
+}
+
+// Latin labels read well as parameter names. Any other script, Bangla say,
+// leaves nothing to go on, and the model has the label in the description.
+function keyForLabel(label: string, taken: Set<string>) {
+  const slug = label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^[_0-9]+|_+$/g, '')
+    .slice(0, MAX_ORDER_FIELD_KEY_LENGTH - 3);
+  const base = slug || 'field';
+  if (slug && !taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}_${n}`)) n++;
+  return `${base}_${n}`;
 }
 
 // The JSON body of Create and Update. Unknown fields are ignored, like Go's

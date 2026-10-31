@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
+import type { OrderField } from '../orders/order-tool';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   apiError,
@@ -100,6 +101,17 @@ export class ToolsService {
       if (count === 0) throw notFound();
       return this.get(userId, id);
     });
+  }
+
+  // The one setting of the built-in Take Order tool. It belongs to the account,
+  // so every agent that takes orders collects the same details.
+  async setOrderFields(userId: string, id: string, fields: OrderField[]) {
+    const { count } = await this.prisma.tool.updateMany({
+      where: { id, userId, type: 'order' },
+      data: { config: { fields }, updatedAt: new Date() },
+    });
+    if (count === 0) throw notFound();
+    return this.get(userId, id);
   }
 
   async remove(userId: string, id: string) {

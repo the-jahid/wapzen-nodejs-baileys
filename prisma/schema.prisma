@@ -252,7 +252,8 @@ model Tool {
   name        String   @map("tool_name")
   description String
   config      Json     @default("{}")
-  // Built in: can't be edited or deleted, and has a stable key.
+  // Built in: can't be edited or deleted, and has a stable key. Take Order's
+  // config is its { fields }, absent until the owner changes the default list.
   isSystem    Boolean  @default(false) @map("is_system")
   key         String?
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
@@ -301,6 +302,8 @@ model Order {
   // [{ name, quantity?, note? }]
   items           Json     @default("[]")
   deliveryAddress String?  @map("delivery_address")
+  // [{ key, label, value }]: the fields the owner added to Take Order
+  customFields    Json     @default("[]") @map("custom_fields")
   // 'new' | 'confirmed' | 'processing' | 'completed' | 'cancelled'
   status          String   @default("new")
   // 'chat' | 'voice'

@@ -2545,6 +2545,17 @@
             "nullable": true,
             "type": "string"
           },
+          "custom_fields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": { "type": "string" },
+                "label": { "type": "string" },
+                "value": { "type": "string" }
+              }
+            }
+          },
           "description": {
             "type": "string"
           },
