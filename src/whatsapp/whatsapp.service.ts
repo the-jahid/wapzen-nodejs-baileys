@@ -248,14 +248,7 @@ export class WhatsAppService
       where: { userId, status: 'pending_qr', waJid: null },
       orderBy: { createdAt: 'desc' },
     });
-    if (req.byCode) {
-      // A code login replaces any QR login the user has open.
-      for (const row of running) {
-        this.endLogin(row.id, 'cancelled', 'switched to a pairing code');
-        this.stopSocket(row.id);
-        await this.deleteRow(row.id);
-      }
-    } else {
+    if (!req.byCode) {
       const live = running.find(
         (row) => this.sockets.has(row.id) && this.logins.has(row.id),
       );
@@ -275,6 +268,20 @@ export class WhatsAppService
       this.stopSocket(row.id);
       await this.deleteRow(row.id);
       throw this.loginError(err as Error, req.byCode, email);
+    }
+
+    // A code login replaces whatever the user had open, QR or an earlier code,
+    // but only now that the new code is in hand: if WhatsApp had refused it,
+    // the one still on screen would keep working. The dashboard also polls the
+    // old row until the new one comes back. One the phone linked in the
+    // meantime is a number now, so it stays.
+    if (req.byCode) {
+      for (const old of running) {
+        if (this.logins.get(old.id)?.paired) continue;
+        this.endLogin(old.id, 'cancelled', 'replaced by a new pairing code');
+        this.stopSocket(old.id);
+        await this.deleteRow(old.id);
+      }
     }
     return this.get(userId, row.id);
   }
