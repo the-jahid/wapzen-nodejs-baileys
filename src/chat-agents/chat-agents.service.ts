@@ -74,7 +74,11 @@ export class ChatAgentsService {
       const phoneNumberId = normalizeNullable(a.phone_number_id);
       // An agent created with a number starts live unless the request says
       // otherwise: connecting a number is the activation.
-      const status = a.status || (phoneNumberId ? 'active' : DEFAULT_STATUS);
+      const status = await allowedStatus(
+        tx,
+        userId,
+        a.status || (phoneNumberId ? 'active' : DEFAULT_STATUS),
+      );
       await ensureNameFree(tx, userId, name);
       await ensurePhoneNumberFree(tx, userId, phoneNumberId);
       ensureNoKnowledgeBases(req);
@@ -142,7 +146,9 @@ export class ChatAgentsService {
         await ensurePhoneNumberFree(tx, userId, nextPhoneNumberId, id);
         data.phoneNumberId = nextPhoneNumberId;
       }
-      if (nextStatus !== current.status) data.status = nextStatus;
+      if (nextStatus !== current.status) {
+        data.status = await allowedStatus(tx, userId, nextStatus);
+      }
       if (m?.provider !== undefined || m?.name !== undefined) {
         data.modelProvider = DEFAULT_PROVIDER;
         data.modelName = DEFAULT_MODEL;
@@ -199,6 +205,19 @@ export class ChatAgentsService {
       throw apiError(HttpStatus.INTERNAL_SERVER_ERROR, fallback);
     }
   }
+}
+
+// An account that has used all its replies can't take an agent live: it would
+// be stopped again, and its owner messaged again, on the next message. The
+// request still succeeds so that assigning a number or saving the prompt keeps
+// working, and reply_limit_reached tells the dashboard why the agent stayed off.
+async function allowedStatus(tx: Tx, userId: string, status: string) {
+  if (status !== 'active') return status;
+  const owner = await tx.user.findUniqueOrThrow({
+    where: { id: userId },
+    select: { aiReplyCount: true, aiReplyLimit: true },
+  });
+  return owner.aiReplyCount >= owner.aiReplyLimit ? 'inactive' : status;
 }
 
 // The checks below run inside the transaction so the API can name the

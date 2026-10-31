@@ -9,11 +9,14 @@ import { resolve, type ResolvedTool } from './tools.types';
 
 const logger = new Logger('ChatToolbox');
 
-// A tool as Anthropic declares it, which ChatAnthropic.bindTools passes on.
+// A tool as OpenAI declares it, which ChatOpenAI.bindTools passes on.
 export type ToolDefinition = {
-  name: string;
-  description: string;
-  input_schema: ReturnType<typeof parameterSchema>;
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: ReturnType<typeof parameterSchema>;
+  };
 };
 
 export class ChatToolbox {
@@ -50,9 +53,12 @@ export class ChatToolbox {
   // prompt text, and the model decides whether to call a tool on them alone.
   definitions(): ToolDefinition[] {
     return [...this.byName.values()].map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      input_schema: parameterSchema(tool),
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: parameterSchema(tool),
+      },
     }));
   }
 
@@ -65,7 +71,10 @@ export class ChatToolbox {
     return [
       'You can take these actions in this conversation:',
       ...lines,
-      'Call a tool as soon as the conversation calls for it, rather than saying what you are about to do and waiting for the next message. ' +
+      'When a request matches one of these actions, use function calling to run it straight away. ' +
+        'Never type a tool call, its name or its arguments as message text: everything you write goes to the person. ' +
+        'Never write that you will check, look up or send something, and never ask a question a tool could answer: there is no later moment, so a promise in text is never carried out. ' +
+        'Never state a price, stock level or other fact that a tool provides unless the tool returned it in this conversation, and never say something was sent unless the tool confirmed it. ' +
         'Never quote a tool name, a URL, or raw response data back — reply with the part that answers the person, in your own words. ' +
         'If a tool reports a failure, say you could not complete that right now instead of inventing a result.',
     ].join('\n');

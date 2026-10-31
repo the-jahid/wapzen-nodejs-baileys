@@ -166,22 +166,22 @@
             "type": "object"
           },
           "model": {
-            "description": "Conversational model settings. Every chat agent answers with Claude Haiku 4.5; provider and name may be omitted and cannot name another model.",
+            "description": "Conversational model settings. Every chat agent answers with GPT-5 nano; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-5 nano takes none.",
             "properties": {
               "name": {
-                "default": "claude-haiku-4-5",
+                "default": "gpt-5-nano",
                 "enum": [
-                  "claude-haiku-4-5"
+                  "gpt-5-nano"
                 ],
-                "example": "claude-haiku-4-5",
+                "example": "gpt-5-nano",
                 "type": "string"
               },
               "provider": {
-                "default": "anthropic",
+                "default": "openai",
                 "enum": [
-                  "anthropic"
+                  "openai"
                 ],
-                "example": "anthropic",
+                "example": "openai",
                 "type": "string"
               },
               "temperature": {
@@ -558,22 +558,22 @@
             "type": "object"
           },
           "model": {
-            "description": "Conversational model settings. Every chat agent answers with Claude Haiku 4.5; provider and name may be omitted and cannot name another model.",
+            "description": "Conversational model settings. Every chat agent answers with GPT-5 nano; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-5 nano takes none.",
             "properties": {
               "name": {
-                "default": "claude-haiku-4-5",
+                "default": "gpt-5-nano",
                 "enum": [
-                  "claude-haiku-4-5"
+                  "gpt-5-nano"
                 ],
-                "example": "claude-haiku-4-5",
+                "example": "gpt-5-nano",
                 "type": "string"
               },
               "provider": {
-                "default": "anthropic",
+                "default": "openai",
                 "enum": [
-                  "anthropic"
+                  "openai"
                 ],
-                "example": "anthropic",
+                "example": "openai",
                 "type": "string"
               },
               "temperature": {
@@ -2272,22 +2272,22 @@
             "type": "object"
           },
           "model": {
-            "description": "Conversational model settings. Every chat agent answers with Claude Haiku 4.5; provider and name may be omitted and cannot name another model.",
+            "description": "Conversational model settings. Every chat agent answers with GPT-5 nano; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-5 nano takes none.",
             "properties": {
               "name": {
-                "default": "claude-haiku-4-5",
+                "default": "gpt-5-nano",
                 "enum": [
-                  "claude-haiku-4-5"
+                  "gpt-5-nano"
                 ],
-                "example": "claude-haiku-4-5",
+                "example": "gpt-5-nano",
                 "type": "string"
               },
               "provider": {
-                "default": "anthropic",
+                "default": "openai",
                 "enum": [
-                  "anthropic"
+                  "openai"
                 ],
-                "example": "anthropic",
+                "example": "openai",
                 "type": "string"
               },
               "temperature": {
@@ -2566,8 +2566,8 @@
                         ]
                       },
                       "model": {
-                        "name": "claude-haiku-4-5",
-                        "provider": "anthropic",
+                        "name": "gpt-5-nano",
+                        "provider": "openai",
                         "temperature": 0.3
                       },
                       "prompt": {
@@ -2664,8 +2664,8 @@
                       ]
                     },
                     "model": {
-                      "name": "claude-haiku-4-5",
-                      "provider": "anthropic",
+                      "name": "gpt-5-nano",
+                      "provider": "openai",
                       "temperature": 0.3
                     },
                     "prompt": {
@@ -2840,8 +2840,8 @@
                       ]
                     },
                     "model": {
-                      "name": "claude-haiku-4-5",
-                      "provider": "anthropic",
+                      "name": "gpt-5-nano",
+                      "provider": "openai",
                       "temperature": 0.3
                     },
                     "prompt": {
@@ -2944,8 +2944,8 @@
                       ]
                     },
                     "model": {
-                      "name": "claude-haiku-4-5",
-                      "provider": "anthropic",
+                      "name": "gpt-5-nano",
+                      "provider": "openai",
                       "temperature": 0.3
                     },
                     "prompt": {

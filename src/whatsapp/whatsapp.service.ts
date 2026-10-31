@@ -15,6 +15,7 @@ import makeWASocket, {
   isJidNewsletter,
   isPnUser,
   jidDecode,
+  jidNormalizedUser,
   makeCacheableSignalKeyStore,
   proto,
   S_WHATSAPP_NET,
@@ -665,6 +666,8 @@ export class WhatsAppService
         send: (reply) => sock.sendMessage(jid, { text: reply }),
         setTyping: (typing) =>
           sock.sendPresenceUpdate(typing ? 'composing' : 'paused', jid),
+        messageOwner: (notice) =>
+          sock.sendMessage(jidNormalizedUser(sock.user!.id), { text: notice }),
       })
       .catch((err: Error) =>
         this.logger.error(`answering on ${id} failed: ${err.message}`),

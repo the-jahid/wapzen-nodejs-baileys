@@ -140,9 +140,17 @@ for (;;) {
   for (const n of reallyUnused) delete schemas[n];
 }
 
-const json = JSON.stringify(doc, null, 2).replaceAll(
-  ' Only api_request and send_text tools apply to a chat; end_call and transfer_call exist to release a phone call and are ignored here.',
-  '',
-);
+// This server answers with its own model, not the Go server's.
+const json = JSON.stringify(doc, null, 2)
+  .replaceAll(
+    ' Only api_request and send_text tools apply to a chat; end_call and transfer_call exist to release a phone call and are ignored here.',
+    '',
+  )
+  .replaceAll(
+    'Every chat agent answers with Claude Haiku 4.5; provider and name may be omitted and cannot name another model.',
+    'Every chat agent answers with GPT-5 nano; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-5 nano takes none.',
+  )
+  .replaceAll('"claude-haiku-4-5"', '"gpt-5-nano"')
+  .replaceAll('"anthropic"', '"openai"');
 writeFileSync(out, json + '\n');
 console.log(`wrote ${out}: ${Object.keys(doc.paths).length} paths, ${Object.keys(schemas).length} schemas`);

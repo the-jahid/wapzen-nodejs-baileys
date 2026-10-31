@@ -22,8 +22,8 @@ model User {
   blockedAt DateTime? @map("blocked_at") @db.Timestamptz
   // Lifetime AI replies sent by the account's agents.
   aiReplyCount Int    @default(0) @map("ai_reply_count")
-  // How many replies the account may send: 100 free, raised for a paid plan.
-  aiReplyLimit Int    @default(100) @map("ai_reply_limit")
+  // How many replies the account may send: 50 free, raised for a paid plan.
+  aiReplyLimit Int    @default(50) @map("ai_reply_limit")
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -45,9 +45,9 @@ model ChatAgent {
   phoneNumberId String?  @unique @map("phone_number_id")
   // 'active' | 'inactive'; an active agent must have a phone number.
   status        String   @default("inactive")
-  // Chat agents are locked to Claude Haiku 4.5 (Go migration 00062).
-  modelProvider String   @default("anthropic") @map("model_provider")
-  modelName     String   @default("claude-haiku-4-5") @map("model_name")
+  // Chat agents are locked to GPT-5 nano.
+  modelProvider String   @default("openai") @map("model_provider")
+  modelName     String   @default("gpt-5-nano") @map("model_name")
   // 0.1 – 1.0
   temperature   Float    @default(0.3) @map("model_temperature")
   systemPrompt  String   @default("You are a helpful, friendly WhatsApp chat assistant.") @map("prompt_system_prompt")
