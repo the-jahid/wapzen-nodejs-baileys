@@ -19,12 +19,12 @@ import {
   DEFAULT_LIST_LIMIT,
   invalidBody,
   isObject,
-  isToolType,
   LIST_PATH,
+  LISTED_TOOL_TYPES,
   MAX_LIST_LIMIT,
   parseApiRequest,
   parseInput,
-  TOOL_TYPES,
+  systemTool,
   validateCreate,
   validateUpdate,
   validationFailed,
@@ -63,10 +63,10 @@ export class ToolsController {
       });
     }
     const type = rawType?.trim() ?? '';
-    if (type && !isToolType(type)) {
+    if (type && !LISTED_TOOL_TYPES.includes(type)) {
       errors.push({
         field: 'type',
-        message: `type must be one of ${TOOL_TYPES.join(', ')}`,
+        message: `type must be one of ${LISTED_TOOL_TYPES.join(', ')}`,
       });
     }
     if (page === null || limit === null || errors.length) {
@@ -128,7 +128,8 @@ export class ToolsController {
     // The stored type decides which block the update may carry, so the tool
     // is read before the input is judged; a missing one is a 404 either way.
     const current = await this.tools.resolved(user.id, id);
-    const errors = validateUpdate(input, current.type);
+    if (current.isSystem) throw systemTool();
+    const errors = validateUpdate(input, current.type, current.name);
     if (errors.length) throw validationFailed(errors);
     const data = await this.tools.update(user.id, id, current.type, input);
     return envelope('Tool updated successfully', data);

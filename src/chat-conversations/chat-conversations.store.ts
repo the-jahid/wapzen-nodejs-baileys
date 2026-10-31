@@ -70,6 +70,24 @@ export async function recordChatTurn(prisma: PrismaService, turn: NewChatTurn) {
     ORDER BY t.ord`;
 }
 
+// The thread between a number and a contact, opened if this is its first
+// message, for anything that has to point at it before the turn is saved.
+export async function ensureConversation(
+  prisma: PrismaService,
+  thread: Omit<NewChatTurn, 'waMessageId' | 'userMessage' | 'assistantMessage'>,
+) {
+  const [row] = await prisma.$queryRaw<{ id: string }[]>`
+    INSERT INTO chat_conversations
+      (user_id, phone_number_id, chat_agent_id, peer_jid, peer_phone, peer_name)
+    VALUES (${thread.userId}, ${thread.phoneNumberId}, ${thread.chatAgentId || null},
+      ${thread.peerJid}, ${thread.peerPhone || null},
+      ${thread.peerName?.trim().slice(0, MAX_PEER_NAME) || null})
+    ON CONFLICT (phone_number_id, peer_jid) WHERE phone_number_id IS NOT NULL
+    DO UPDATE SET updated_at = now()
+    RETURNING id`;
+  return row.id;
+}
+
 // Adds one message at the end of a thread. seq is worked out inside the
 // INSERT, so two writers can't both pick the same one quietly: the unique
 // (conversation_id, seq) index rejects the second. The trigger updates the
@@ -98,10 +116,9 @@ export async function appendMessage(
 // the number's auth state ("lid-mapping-<lid>_reverse"), so it's looked up at
 // read time instead of being frozen into the row — the Go server does the
 // same with whatsmeow_lid_map.
-export async function resolvePeerPhones<T extends ChatConversation>(
-  prisma: PrismaService,
-  rows: T[],
-): Promise<T[]> {
+export async function resolvePeerPhones<
+  T extends Pick<ChatConversation, 'phoneNumberId' | 'peerJid' | 'peerPhone'>,
+>(prisma: PrismaService, rows: T[]): Promise<T[]> {
   const keyOf = (row: T) =>
     !row.peerPhone && row.phoneNumberId && row.peerJid.endsWith('@lid')
       ? `lid-mapping-${row.peerJid.slice(0, -'@lid'.length).split(':')[0]}_reverse`

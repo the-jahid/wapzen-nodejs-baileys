@@ -8,6 +8,7 @@ import {
   normalizeApiRequest,
   notFound,
   resolve,
+  systemTool,
   toResource,
   type ApiRequestConfig,
   type ToolInput,
@@ -39,7 +40,8 @@ export class ToolsService {
       this.prisma.tool.findMany({
         where,
         include: withAttachments,
-        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        // Built-in tools first, then newest first.
+        orderBy: [{ isSystem: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
         skip: (page - 1) * limit,
         take: limit,
       }),
@@ -92,7 +94,7 @@ export class ToolsService {
 
     return this.write('failed to update tool', async () => {
       const { count } = await this.prisma.tool.updateMany({
-        where: { id, userId },
+        where: { id, userId, isSystem: false },
         data,
       });
       if (count === 0) throw notFound();
@@ -103,9 +105,12 @@ export class ToolsService {
   async remove(userId: string, id: string) {
     // The attachment rows cascade, so every chat agent using it loses it.
     const { count } = await this.prisma.tool.deleteMany({
-      where: { id, userId },
+      where: { id, userId, isSystem: false },
     });
-    if (count === 0) throw notFound();
+    if (count > 0) return;
+    // Nothing was deleted: either it's built in or it isn't theirs.
+    await this.load(userId, id);
+    throw systemTool();
   }
 
   // Runs an api_request tool once; draft, when sent, is tested in place of

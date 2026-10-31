@@ -24,6 +24,9 @@ model User {
   aiReplyCount Int       @default(0) @map("ai_reply_count")
   // How many replies the account may send: 50 free, raised for a paid plan.
   aiReplyLimit Int       @default(50) @map("ai_reply_limit")
+  // The last order number handed out, so a deleted order's number is never
+  // reused. The first order is #1001.
+  lastOrderNumber Int    @default(1000) @map("last_order_number")
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -32,6 +35,7 @@ model User {
   chatConversations ChatConversation[]
   knowledgeBases    KnowledgeBase[]
   tools             Tool[]
+  orders            Order[]
 
   @@map("users")
 }
@@ -53,6 +57,10 @@ model ChatAgent {
   systemPrompt  String   @default("You are a helpful, friendly WhatsApp chat assistant.") @map("prompt_system_prompt")
   // No longer written: the allowance lives on users since migration 00006.
   aiReplyCount  Int      @default(0) @map("ai_reply_count")
+  // Orders are taken only when this is on AND the Take Order tool is attached.
+  orderEnabled  Boolean  @default(false) @map("order_enabled")
+  // How the owner wants orders taken, added to the prompt while ordering is on.
+  orderInstructions String @default("") @map("order_instructions")
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -61,6 +69,7 @@ model ChatAgent {
   conversations  ChatConversation[]
   tools          ChatAgentTool[]
   knowledgeBases ChatAgentKnowledgeBase[]
+  orders         Order[]
 
   @@unique([userId, agentName])
   @@index([userId])
@@ -139,6 +148,7 @@ model ChatConversation {
   phoneNumber PhoneNumber?  @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
   chatAgent   ChatAgent?    @relation(fields: [chatAgentId], references: [id], onDelete: SetNull)
   messages    ChatMessage[]
+  orders      Order[]
 
   @@index([userId, lastMessageAt(sort: Desc)])
   @@index([chatAgentId])
@@ -232,15 +242,19 @@ model KnowledgeBaseSource {
 // chat agent can take mid-conversation, 'api_request' | 'send_text' (chat
 // only). The settings for the type live in config as one JSON block, replaced
 // wholesale on update. The name pattern, type and description length are
-// CHECKs in the migration SQL.
+// CHECKs in the migration SQL. Every account also has one built-in 'order'
+// tool, Take Order, added by a trigger on users (migration 20261031000003).
 model Tool {
   id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
   userId      String   @map("user_id")
   type        String
-  // The function name the model calls.
+  // The function name the model calls; a built-in tool's is its display name.
   name        String   @map("tool_name")
   description String
   config      Json     @default("{}")
+  // Built in: can't be edited or deleted, and has a stable key.
+  isSystem    Boolean  @default(false) @map("is_system")
+  key         String?
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
@@ -248,6 +262,7 @@ model Tool {
   attachments ChatAgentTool[]
 
   @@unique([userId, name])
+  @@unique([userId, key])
   @@index([userId])
   @@map("tools")
 }
@@ -266,4 +281,41 @@ model ChatAgentTool {
   @@id([chatAgentId, toolId])
   @@index([toolId])
   @@map("chat_agent_tools")
+}
+
+// An order an agent took from a customer. It outlives the agent and the
+// thread it came from, so both links clear rather than cascade. status and
+// channel are CHECKs in the migration SQL.
+model Order {
+  id              String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId          String   @map("user_id")
+  agentId         String?  @map("agent_id")
+  conversationId  String?  @map("conversation_id")
+  // Counts up per account from users.last_order_number.
+  orderNumber     Int      @map("order_number")
+  customerName    String   @map("customer_name")
+  // E.164
+  phone           String
+  email           String?
+  description     String
+  // [{ name, quantity?, note? }]
+  items           Json     @default("[]")
+  deliveryAddress String?  @map("delivery_address")
+  // 'new' | 'confirmed' | 'processing' | 'completed' | 'cancelled'
+  status          String   @default("new")
+  // 'chat' | 'voice'
+  channel         String   @default("chat")
+  internalNote    String?  @map("internal_note")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent        ChatAgent?        @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  conversation ChatConversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, orderNumber])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, status])
+  @@index([conversationId, createdAt])
+  @@map("orders")
 }

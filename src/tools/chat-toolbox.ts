@@ -1,5 +1,11 @@
 import { Logger } from '@nestjs/common';
 import type { Tool } from '../generated/prisma/client';
+import {
+  ORDER_FUNCTION,
+  ORDER_FUNCTION_DESCRIPTION,
+  orderParameters,
+} from '../orders/order-tool';
+import type { OrderResult } from '../orders/orders.service';
 import { argumentToString, parameterSchema, runApiRequest } from './runner';
 import { resolve, type ResolvedTool } from './tools.types';
 
@@ -15,29 +21,54 @@ export type ToolDefinition = {
   function: {
     name: string;
     description: string;
-    parameters: ReturnType<typeof parameterSchema>;
+    parameters: ReturnType<typeof parameterSchema | typeof orderParameters>;
   };
+};
+
+// What an agent with ordering switched on can do, for one reply.
+export type ChatOrders = {
+  // True when the sender's number is known, so the model needn't supply one.
+  phoneKnown: boolean;
+  place: (args: Record<string, unknown>) => Promise<OrderResult>;
 };
 
 export class ChatToolbox {
   private readonly byName = new Map<string, ResolvedTool>();
+  // The order placed in this reply, once there is one.
+  private placed?: Promise<OrderResult>;
+  // Set once the customer has agreed to the order this message.
+  private orderConfirmed = false;
 
   private constructor(
     private readonly label: string,
     // Delivers a send_text tool's message to the person in this chat.
     private readonly send: (text: string) => Promise<unknown>,
+    private readonly orders?: ChatOrders,
   ) {}
 
   // The toolbox for one reply, or null when the agent has nothing it can do,
-  // so callers never special-case an agent that only talks.
+  // so callers never special-case an agent that only talks. Take Order joins
+  // only when orders is given, so with ordering off the model can't call it.
   static for(
     tools: Tool[],
     agentId: string,
     send: (text: string) => Promise<unknown>,
+    orders?: ChatOrders,
   ): ChatToolbox | null {
-    const box = new ChatToolbox(`chat agent ${agentId}`, send);
+    const box = new ChatToolbox(`chat agent ${agentId}`, send, orders);
     for (const row of tools) {
       const tool = resolve(row);
+      if (tool.type === 'order') {
+        // An older tool of the owner's may have this name; this one wins it.
+        if (orders) {
+          box.byName.set(ORDER_FUNCTION, {
+            ...tool,
+            name: ORDER_FUNCTION,
+            description: ORDER_FUNCTION_DESCRIPTION,
+          });
+        }
+        continue;
+      }
       if (box.byName.has(tool.name)) {
         logger.warn(
           `${box.label} skipping tool ${tool.id} (${tool.name}): the name is already in use in this chat`,
@@ -49,6 +80,15 @@ export class ChatToolbox {
     return box.byName.size ? box : null;
   }
 
+  // Whether this reply can place an order.
+  get takesOrders() {
+    return this.byName.get(ORDER_FUNCTION)?.type === 'order';
+  }
+
+  get phoneKnown() {
+    return this.orders?.phoneKnown ?? false;
+  }
+
   // The stored name and description are passed through untouched: they are
   // prompt text, and the model decides whether to call a tool on them alone.
   definitions(): ToolDefinition[] {
@@ -57,7 +97,10 @@ export class ChatToolbox {
       function: {
         name: tool.name,
         description: tool.description,
-        parameters: parameterSchema(tool),
+        parameters:
+          tool.type === 'order'
+            ? orderParameters(this.phoneKnown)
+            : parameterSchema(tool),
       },
     }));
   }
@@ -94,7 +137,42 @@ export class ChatToolbox {
       return runApiRequest(tool, args ?? {}, this.label);
     }
     if (tool.type === 'send_text') return this.sendText(tool, args ?? {});
+    if (tool.type === 'order' && this.orders) {
+      return JSON.stringify(await this.placeOrder(this.orders, args ?? {}));
+    }
     return `Tool "${name}" is not something this conversation can do.`;
+  }
+
+  confirmOrder() {
+    this.orderConfirmed = true;
+  }
+
+  // The number of the order placed in this reply, if one was.
+  async placedOrderNumber() {
+    const result = await this.placed;
+    return result?.success ? result.order_number : undefined;
+  }
+
+  // The model sometimes calls before the customer has agreed, even with the
+  // address still to come, so that is checked here, not asked of it. One reply
+  // places one order: having placed it, the model may call again in other
+  // words, which wouldn't count as a duplicate. A failure can be retried.
+  private placeOrder(
+    orders: ChatOrders,
+    args: Record<string, unknown>,
+  ): Promise<OrderResult> {
+    if (!this.orderConfirmed) {
+      return Promise.resolve({
+        success: false,
+        error:
+          'The order was not placed: the customer has not confirmed it yet. Set out the whole order and ask if you should place it.',
+      });
+    }
+    this.placed ??= orders.place(args).then((result) => {
+      if (!result.success) this.placed = undefined;
+      return result;
+    });
+    return this.placed;
   }
 
   // Sends a link, an address or a reference as a WhatsApp message of its

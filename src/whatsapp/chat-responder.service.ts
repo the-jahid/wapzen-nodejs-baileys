@@ -6,7 +6,10 @@ import {
   type BaseMessage,
 } from '@langchain/core/messages';
 import { activity } from '../activity/activity';
-import { recordChatTurn } from '../chat-conversations/chat-conversations.store';
+import {
+  recordChatTurn,
+  resolvePeerPhones,
+} from '../chat-conversations/chat-conversations.store';
 import type { ChatAgent, Tool } from '../generated/prisma/client';
 import {
   CHAT_KNOWLEDGE_TOP_K,
@@ -14,9 +17,24 @@ import {
   chatKnowledgeQuery,
 } from '../knowledge-bases/chat-knowledge';
 import { IndexerService } from '../knowledge-bases/indexer.service';
+import {
+  ORDER_FUNCTION,
+  ORDERS_OFF_PROMPT,
+  orderPrompt,
+} from '../orders/order-tool';
+import { OrdersService } from '../orders/orders.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { ChatToolbox, dateContext, zoneForPhone } from '../tools/chat-toolbox';
-import { createReplyAgent, type ReplyContext } from './reply-agent';
+import {
+  ChatToolbox,
+  dateContext,
+  zoneForPhone,
+  type ChatOrders,
+} from '../tools/chat-toolbox';
+import {
+  createConfirmationCheck,
+  createReplyAgent,
+  type ReplyContext,
+} from './reply-agent';
 
 // Follows every agent's own prompt (same wording as the Go server). Reply time
 // is almost all the model writing, so a WhatsApp answer defaults to texting
@@ -85,11 +103,13 @@ export class ChatResponderService {
   private readonly logger = new Logger(ChatResponderService.name);
   private readonly history = new Map<string, Turn[]>();
   private agent?: ReturnType<typeof createReplyAgent>;
+  private confirmationCheck?: ReturnType<typeof createConfirmationCheck>;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly indexer: IndexerService,
+    private readonly orders: OrdersService,
   ) {}
 
   async respond(chat: IncomingChat): Promise<void> {
@@ -181,6 +201,7 @@ export class ChatResponderService {
         agent.tools.map((t) => t.tool),
         agent.id,
         chat.send,
+        await this.ordersFor(agent, chat),
       );
       // OpenAI caches the longest prefix it has seen before, so the part that
       // stays the same between replies goes first. The date and the passages
@@ -188,6 +209,11 @@ export class ChatResponderService {
       const prompt = [
         agent.systemPrompt.trim(),
         toolbox?.instructions(),
+        toolbox?.takesOrders
+          ? orderPrompt(agent.orderInstructions, toolbox.phoneKnown)
+          : agent.tools.some((t) => t.tool.type === 'order')
+            ? ORDERS_OFF_PROMPT
+            : undefined,
         CHAT_REPLY_STYLE,
         dateContext(new Date(), zoneForPhone(agent.phoneNumber?.phoneNumber)),
         await this.knowledgeFor(agent, key, chat.text),
@@ -202,7 +228,20 @@ export class ChatResponderService {
         ),
         new HumanMessage(chat.text),
       ];
-      const reply = await this.generate(apiKey, messages, { prompt, toolbox });
+      const confirmed =
+        !!toolbox?.takesOrders &&
+        (await this.orderConfirmed(apiKey, key, chat.text, agent));
+      if (confirmed) toolbox.confirmOrder();
+      const generated = await this.generate(apiKey, messages, {
+        prompt,
+        toolbox,
+        requiredTool: confirmed ? ORDER_FUNCTION : undefined,
+      });
+      // An order must never be placed in silence.
+      const orderNumber = await toolbox?.placedOrderNumber();
+      const reply =
+        generated ||
+        (orderNumber ? `Your order #${orderNumber} is placed.` : '');
       if (!reply) {
         this.logger.warn(`chat agent ${agent.id} answered with no text`);
         return '';
@@ -236,6 +275,60 @@ export class ChatResponderService {
           })
           .catch(() => undefined);
       }
+    }
+  }
+
+  // What create_order does in this chat, when the owner has ordering on. An
+  // "@lid" chat often arrives with no number, which the saved LID map may know.
+  private async ordersFor(
+    agent: ReplyingAgent,
+    chat: IncomingChat,
+  ): Promise<ChatOrders | undefined> {
+    if (!agent.orderEnabled) return undefined;
+    const [{ peerPhone }] = await resolvePeerPhones(this.prisma, [
+      {
+        phoneNumberId: chat.phoneNumberId,
+        peerJid: chat.peerJid,
+        peerPhone: chat.peerPhone ?? null,
+      },
+    ]);
+    return {
+      phoneKnown: !!peerPhone,
+      place: (args) =>
+        this.orders.place(
+          {
+            userId: agent.userId,
+            ownerEmail: agent.user.email,
+            agentId: agent.id,
+            agentName: agent.agentName,
+            phoneNumberId: chat.phoneNumberId,
+            peerJid: chat.peerJid,
+            customerPhone: peerPhone ?? undefined,
+            peerName: chat.peerName,
+            agentPhone: agent.phoneNumber?.phoneNumber,
+          },
+          args,
+        ),
+    };
+  }
+
+  // Whether this message agrees to an order the agent has set out, which has
+  // to have happened in an earlier reply. If the check fails the reply carries
+  // on without it, and the customer's next message gets another chance.
+  private async orderConfirmed(
+    apiKey: string,
+    key: string,
+    text: string,
+    agent: ReplyingAgent,
+  ) {
+    const turns = this.recent(key);
+    if (!turns.some((turn) => turn.role === 'assistant')) return false;
+    this.confirmationCheck ??= createConfirmationCheck(apiKey);
+    try {
+      return await this.confirmationCheck(turns, text, agent.orderInstructions);
+    } catch (err) {
+      this.logger.warn(`order check failed: ${(err as Error).message}`);
+      return false;
     }
   }
 

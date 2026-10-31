@@ -4,10 +4,12 @@ import type { Tool } from '../generated/prisma/client';
 // Wire types and validation for /v1/tools, ported from the Go server's
 // handlers/tool_handler.go and models/tool.go so both servers accept and
 // answer the same. Chat only: end_call and transfer_call release a phone
-// call, so the only types are the two a chat can run.
+// call, so the only types are the two a chat can run. The third type stored,
+// 'order', is the built-in Take Order tool: it can be listed but not created.
 
 export const TOOL_TYPES = ['api_request', 'send_text'] as const;
 export type ToolType = (typeof TOOL_TYPES)[number];
+export const LISTED_TOOL_TYPES = [...TOOL_TYPES, 'order'];
 
 export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 export const PARAMETER_TYPES = ['string', 'number', 'boolean'];
@@ -29,6 +31,8 @@ const MAX_MESSAGE_LENGTH = 1000;
 // Mirrors the tools.tool_name CHECK: what both OpenAI and Anthropic accept as
 // a function name. Checked here so a bad name is a field error, not a 500.
 const NAME_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+// The function the built-in Take Order tool reaches the model as.
+const RESERVED_NAME = 'create_order';
 
 export type ToolParameter = {
   name: string;
@@ -67,6 +71,7 @@ export type ResolvedTool = {
   type: string;
   name: string;
   description: string;
+  isSystem: boolean;
   apiRequest?: ApiRequestConfig;
   sendText?: SendTextConfig;
 };
@@ -82,6 +87,8 @@ export function toResource(
     type: row.type,
     name: row.name,
     description: row.description,
+    key: row.key,
+    is_system: row.isSystem,
     chat_agent_ids: (row.attachments ?? []).map((a) => a.chatAgentId),
     ...(tool.apiRequest ? { api_request: tool.apiRequest } : {}),
     ...(tool.sendText ? { send_text: tool.sendText } : {}),
@@ -102,6 +109,7 @@ export function resolve(row: Tool): ResolvedTool {
     type: row.type,
     name: row.name,
     description: row.description,
+    isSystem: row.isSystem,
   };
   if (row.type === 'api_request') {
     tool.apiRequest = {
@@ -143,6 +151,13 @@ export function notFound() {
 
 export function nameTaken() {
   return apiError(HttpStatus.CONFLICT, 'a tool with this name already exists');
+}
+
+export function systemTool() {
+  return apiError(
+    HttpStatus.FORBIDDEN,
+    "this is a built-in tool: it can't be edited or deleted. Set its order instructions on the agent",
+  );
 }
 
 // The JSON body of Create and Update. Unknown fields are ignored, like Go's
@@ -213,7 +228,11 @@ export function validateCreate(input: ToolInput): FieldError[] {
   return errors;
 }
 
-export function validateUpdate(input: ToolInput, storedType: string) {
+export function validateUpdate(
+  input: ToolInput,
+  storedType: string,
+  storedName: string,
+) {
   const errors: FieldError[] = [];
   if (input.type !== undefined && input.type.trim() !== storedType) {
     errors.push({
@@ -222,7 +241,11 @@ export function validateUpdate(input: ToolInput, storedType: string) {
         'type cannot be changed after creation; delete the tool and create it again',
     });
   }
-  if (input.name !== undefined) errors.push(...nameErrors(input.name.trim()));
+  // The dashboard resends the name on every save, so an old tool that already
+  // has a name now reserved can still be edited.
+  if (input.name !== undefined && input.name.trim() !== storedName) {
+    errors.push(...nameErrors(input.name.trim()));
+  }
   if (input.description !== undefined) {
     errors.push(...descriptionErrors(input.description.trim()));
   }
@@ -369,6 +392,9 @@ export function isToolType(type: string): type is ToolType {
 
 function nameErrors(name: string): FieldError[] {
   if (!name) return [{ field: 'name', message: 'name is required' }];
+  if (name === RESERVED_NAME) {
+    return [{ field: 'name', message: `${name} is reserved for Take Order` }];
+  }
   if (!NAME_PATTERN.test(name)) {
     return [
       {

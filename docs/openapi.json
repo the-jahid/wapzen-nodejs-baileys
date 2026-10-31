@@ -222,6 +222,25 @@
             "example": "2026-08-29T10:00:00Z",
             "format": "date-time",
             "type": "string"
+          },
+          "order": {
+            "description": "Whether the agent takes orders. Orders are taken only when `order_enabled` is true and the Take Order tool is attached through `tools.tool_ids`.",
+            "properties": {
+              "order_enabled": {
+                "default": false,
+                "description": "Turns order taking on for this agent.",
+                "type": "boolean"
+              },
+              "order_instructions": {
+                "description": "How the agent should take orders. Added to its prompt while ordering is on. At most 4000 characters.",
+                "type": "string"
+              },
+              "orders_on": {
+                "description": "Read-only. True when the toggle is on and Take Order is attached.",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
           }
         },
         "required": [
@@ -606,6 +625,21 @@
                   "type": "string"
                 },
                 "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "order": {
+            "description": "Whether the agent takes orders. Orders are taken only when `order_enabled` is true and the Take Order tool is attached through `tools.tool_ids`.",
+            "properties": {
+              "order_enabled": {
+                "default": false,
+                "description": "Turns order taking on for this agent.",
+                "type": "boolean"
+              },
+              "order_instructions": {
+                "description": "How the agent should take orders. Added to its prompt while ordering is on. At most 4000 characters.",
+                "type": "string"
               }
             },
             "type": "object"
@@ -1920,7 +1954,8 @@
             "description": "Which action this tool performs. It decides which configuration block is read.",
             "enum": [
               "api_request",
-              "send_text"
+              "send_text",
+              "order"
             ],
             "example": "api_request",
             "type": "string"
@@ -1930,6 +1965,15 @@
             "example": "2026-08-19T10:00:00Z",
             "format": "date-time",
             "type": "string"
+          },
+          "key": {
+            "description": "Stable key of a built-in tool, `take_order` for Take Order. Null on tools you created.",
+            "nullable": true,
+            "type": "string"
+          },
+          "is_system": {
+            "description": "True for a built-in tool. Every account has Take Order; it cannot be created, edited or deleted. Attach it through `tools.tool_ids` and set it up in the `order` section of the chat agent.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2323,6 +2367,21 @@
               }
             },
             "type": "object"
+          },
+          "order": {
+            "description": "Whether the agent takes orders. Orders are taken only when `order_enabled` is true and the Take Order tool is attached through `tools.tool_ids`.",
+            "properties": {
+              "order_enabled": {
+                "default": false,
+                "description": "Turns order taking on for this agent.",
+                "type": "boolean"
+              },
+              "order_instructions": {
+                "description": "How the agent should take orders. Added to its prompt while ordering is on. At most 4000 characters.",
+                "type": "string"
+              }
+            },
+            "type": "object"
           }
         },
         "type": "object"
@@ -2430,6 +2489,127 @@
           },
           "send_text": {
             "$ref": "#/components/schemas/ToolSendTextConfig"
+          }
+        },
+        "type": "object"
+      },
+      "OrderItem": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Order": {
+        "description": "An order an agent took from a customer during a conversation.",
+        "properties": {
+          "agent_id": {
+            "description": "The agent that took it. Null once that agent is deleted.",
+            "nullable": true,
+            "type": "string"
+          },
+          "agent_name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "chat",
+              "voice"
+            ],
+            "type": "string"
+          },
+          "conversation_id": {
+            "description": "The conversation it came from. Null once that conversation is deleted.",
+            "nullable": true,
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "customer_name": {
+            "type": "string"
+          },
+          "delivery_address": {
+            "nullable": true,
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "email": {
+            "nullable": true,
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "internal_note": {
+            "nullable": true,
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OrderItem"
+            },
+            "type": "array"
+          },
+          "order_number": {
+            "description": "Counts up per account from 1001.",
+            "example": 1024,
+            "type": "integer"
+          },
+          "phone": {
+            "description": "E.164.",
+            "example": "+8801712345678",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "confirmed",
+              "processing",
+              "completed",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "UpdateOrderRequest": {
+        "additionalProperties": false,
+        "description": "Only the status and the internal note can change. Send at least one.",
+        "properties": {
+          "internal_note": {
+            "description": "At most 2000 characters. Null clears it.",
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "confirmed",
+              "processing",
+              "completed",
+              "cancelled"
+            ],
+            "type": "string"
           }
         },
         "type": "object"
@@ -6629,6 +6809,461 @@
           "users"
         ]
       }
+    },
+    "/v1/orders": {
+      "get": {
+        "description": "Lists the authenticated user's orders, newest first. `meta.new_orders` counts every order still marked new, whatever the filters. Orders are only created by an agent, so there is no POST.",
+        "operationId": "listOrders",
+        "security": [
+          {
+            "apiKeyBearer": []
+          }
+        ],
+        "tags": [
+          "Orders"
+        ],
+        "summary": "List orders",
+        "parameters": [
+          {
+            "description": "Page number (1-based).",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Page size.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Matches the customer name, phone, email or order number.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only orders with this status.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "new",
+                "confirmed",
+                "processing",
+                "completed",
+                "cancelled"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only orders taken by this agent.",
+            "in": "query",
+            "name": "agent_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only orders created at or after this ISO 8601 time.",
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only orders created at or before this ISO 8601 time.",
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "$ref": "#/components/schemas/Order"
+                      },
+                      "type": "array"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "One page of orders."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            },
+            "description": "A query parameter is invalid."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            },
+            "description": "Authentication failed."
+          }
+        }
+      }
+    },
+    "/v1/orders/export": {
+      "get": {
+        "description": "Downloads the orders the filters select as CSV, at most 10,000 rows, newest first.",
+        "operationId": "exportOrders",
+        "security": [
+          {
+            "apiKeyBearer": []
+          }
+        ],
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Export orders as CSV",
+        "parameters": [
+          {
+            "description": "Matches the customer name, phone, email or order number.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only orders with this status.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "enum": [
+                "new",
+                "confirmed",
+                "processing",
+                "completed",
+                "cancelled"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only orders taken by this agent.",
+            "in": "query",
+            "name": "agent_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only orders created at or after this ISO 8601 time.",
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only orders created at or before this ISO 8601 time.",
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The CSV file."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            },
+            "description": "A query parameter is invalid."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            },
+            "description": "Authentication failed."
+          }
+        }
+      }
+    },
+    "/v1/orders/{order_id}": {
+      "get": {
+        "description": "Returns one order.",
+        "operationId": "getOrder",
+        "security": [
+          {
+            "apiKeyBearer": []
+          }
+        ],
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Get an order",
+        "parameters": [
+          {
+            "description": "Unique identifier of the order.",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Order"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The order."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            },
+            "description": "Authentication failed."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            },
+            "description": "No such order on this account."
+          }
+        }
+      },
+      "patch": {
+        "description": "Changes an order's status or internal note.",
+        "operationId": "updateOrder",
+        "security": [
+          {
+            "apiKeyBearer": []
+          }
+        ],
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Update an order",
+        "parameters": [
+          {
+            "description": "Unique identifier of the order.",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateOrderRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Order"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The updated order."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            },
+            "description": "The body is invalid."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            },
+            "description": "Authentication failed."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            },
+            "description": "No such order on this account."
+          }
+        }
+      },
+      "delete": {
+        "description": "Deletes an order. Its number is never reused.",
+        "operationId": "deleteOrder",
+        "security": [
+          {
+            "apiKeyBearer": []
+          }
+        ],
+        "tags": [
+          "Orders"
+        ],
+        "summary": "Delete an order",
+        "parameters": [
+          {
+            "description": "Unique identifier of the order.",
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            },
+            "description": "The order was deleted."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            },
+            "description": "Authentication failed."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/APIResponse"
+                }
+              }
+            },
+            "description": "No such order on this account."
+          }
+        }
+      }
     }
   },
   "servers": [
@@ -6668,6 +7303,10 @@
     {
       "description": "Tool CRUD endpoints. Tools are the actions a chat agent can take during a conversation.",
       "name": "Tools"
+    },
+    {
+      "description": "Orders agents take during a conversation. Scoped to the authenticated account.",
+      "name": "Orders"
     }
   ]
 }

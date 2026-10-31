@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
+import { cleanText } from '../orders/orders.types';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   apiError,
@@ -99,6 +100,8 @@ export class ChatAgentsService {
           temperature: req.model?.temperature ?? DEFAULT_TEMPERATURE,
           systemPrompt:
             req.prompt?.system_prompt?.trim() || DEFAULT_SYSTEM_PROMPT,
+          orderEnabled: req.order?.order_enabled ?? false,
+          orderInstructions: cleanText(req.order?.order_instructions ?? ''),
           knowledgeBases: { create: knowledgeBaseRows(knowledgeBaseIds) },
           tools: { create: attachmentRows(toolIds) },
         },
@@ -161,6 +164,12 @@ export class ChatAgentsService {
       if (m?.temperature !== undefined) data.temperature = m.temperature;
       if (req.prompt?.system_prompt !== undefined) {
         data.systemPrompt = req.prompt.system_prompt.trim();
+      }
+      if (req.order?.order_enabled !== undefined) {
+        data.orderEnabled = req.order.order_enabled;
+      }
+      if (req.order?.order_instructions !== undefined) {
+        data.orderInstructions = cleanText(req.order.order_instructions);
       }
       // An id list replaces the attached set wholesale; leaving it out keeps
       // the set as it is.
