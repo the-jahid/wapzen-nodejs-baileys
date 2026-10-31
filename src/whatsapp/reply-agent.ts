@@ -8,12 +8,16 @@ import { AIMessage, createAgent, createMiddleware } from 'langchain';
 import { DEFAULT_MODEL } from '../chat-agents/chat-agents.types';
 import type { ChatToolbox } from '../tools/chat-toolbox';
 
-const REPLY_MAX_TOKENS = 500;
+// Reasoning counts against this. At medium effort it took up to 2,048 tokens on
+// a short prompt, and a reply that runs out has no text, so this is a safety
+// limit, not a length limit: chatReplyStyle keeps replies short.
+const REPLY_MAX_TOKENS = 6000;
 // How many times one reply may call tools. The last round is asked for text
 // only, so a model that keeps calling tools still ends up answering.
 const MAX_TOOL_ROUNDS = 3;
-// The answer to the yes-or-no question below is one short function call.
-const CONFIRMATION_MAX_TOKENS = 60;
+// The answer to the yes-or-no question below is one short function call, but
+// reasoning took up to 1,216 tokens first, and running out reads as a no.
+const CONFIRMATION_MAX_TOKENS = 3000;
 // How much of the chat that question is asked about.
 const CONFIRMATION_TURNS = 6;
 
@@ -77,16 +81,15 @@ const chatAgentTools = createMiddleware({
 
 // Every chat agent answers with the same model, whatever the row says. It
 // refuses any temperature but its default, so agent.temperature isn't sent.
-// Minimal effort means no reasoning; it can't be switched off, and leaving it
-// out means the default effort, which can spend every token on reasoning and
-// answer with no text.
+// Reasoning spends the same tokens as the answer, so the limits above have to
+// leave room for it or the model answers with no text.
 function chatModel(apiKey: string, maxTokens: number) {
   return new ChatOpenAI({
     model: DEFAULT_MODEL,
     apiKey,
     maxTokens,
     maxRetries: 2,
-    reasoning: { effort: 'minimal' },
+    reasoning: { effort: 'medium' },
   });
 }
 
