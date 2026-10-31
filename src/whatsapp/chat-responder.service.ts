@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -33,8 +34,10 @@ import {
   type ChatOrders,
 } from '../tools/chat-toolbox';
 import {
+  CHAT_SUMMARY_AT,
   createConfirmationCheck,
   createReplyAgent,
+  isChatSummary,
   type ReplyContext,
 } from './reply-agent';
 
@@ -46,12 +49,27 @@ const CHAT_REPLY_STYLE =
   'usually one to three short sentences, about 60 words at most, with no headings or long lists. ' +
   'Give a longer answer only when the person asks for detail or your instructions above call for it.';
 
+// The model fills gaps in a thin prompt with plausible facts (in a live test it
+// gave a delivery time the shop never set, and said it would check stock with
+// no way to). Placed with the style, ahead of what changes, so it caches.
+const CHAT_FACTS_RULE =
+  'Only state facts about this business, such as prices, stock, sizes, colours, delivery times, payment, policies and opening hours, ' +
+  'when they are in your instructions above, the retrieved knowledge, or a tool result. ' +
+  'When you do not have a fact, say plainly that you do not have that information; never guess or give a typical answer. ' +
+  'Never say you will do something later, such as checking stock or calling back, unless one of your tools does it now.';
+
+// People often send one thought as several quick messages. Each waits this
+// long for the next before the agent answers them all as one, so two replies
+// never cross. MAX_BURST_WAIT_MS caps the wait for someone who keeps typing.
+const BURST_QUIET_MS = 2_000;
+const MAX_BURST_WAIT_MS = 8_000;
+
 // The model remembers what was said in a chat in the last five minutes.
 const HISTORY_WINDOW_MS = 5 * 60_000;
-// The most it remembers however fast a chat goes: seven exchanges, a message
-// and its reply each. Keep it even, or trimming to the person's message loses
-// one more.
-const MAX_HISTORY = 14;
+// The most it keeps word for word. The summary middleware sums a chat up before
+// it gets here, so this only stops a chat whose summaries keep failing from
+// growing. Keep it even, or trimming to the person's message loses one more.
+const MAX_HISTORY = CHAT_SUMMARY_AT;
 // Chats kept in memory across every number; past this the one idle longest
 // is forgotten, so memory stays flat however many people write in.
 const MAX_CONVERSATIONS = 5_000;
@@ -68,6 +86,16 @@ const LIMIT_REACHED_MESSAGE =
   `To buy one, message us on WhatsApp: ${LIMIT_WHATSAPP_URL}`;
 
 type Turn = { role: 'user' | 'assistant'; text: string; at: number };
+
+// One chat's messages waiting to be answered together. Only one reply per chat
+// runs at a time; what arrives meanwhile waits for the next.
+type Burst = {
+  waiting: IncomingChat[];
+  firstAt: number;
+  lastAt: number;
+  timer?: NodeJS.Timeout;
+  replying: boolean;
+};
 
 // The agent with what a reply needs: its attached tools, in attachment
 // order, the knowledge bases it reads, and its number, whose country dates the
@@ -104,6 +132,9 @@ export type IncomingChat = {
 export class ChatResponderService {
   private readonly logger = new Logger(ChatResponderService.name);
   private readonly history = new Map<string, Turn[]>();
+  // What the summary middleware made of each long chat's older messages.
+  private readonly summaries = new Map<string, BaseMessage>();
+  private readonly bursts = new Map<string, Burst>();
   private agent?: ReturnType<typeof createReplyAgent>;
   private confirmationCheck?: ReturnType<typeof createConfirmationCheck>;
 
@@ -114,7 +145,58 @@ export class ChatResponderService {
     private readonly orders: OrdersService,
   ) {}
 
-  async respond(chat: IncomingChat): Promise<void> {
+  // Queues a message to be answered with any others the person sends in the
+  // same burst. A message lost here (a restart inside the wait) goes unanswered,
+  // as one mid-reply always has.
+  respond(chat: IncomingChat): Promise<void> {
+    const key = `${chat.phoneNumberId}|${chat.peerJid}`;
+    const now = Date.now();
+    let burst = this.bursts.get(key);
+    if (!burst) {
+      burst = { waiting: [], firstAt: now, lastAt: now, replying: false };
+      this.bursts.set(key, burst);
+    }
+    if (!burst.waiting.length) burst.firstAt = now;
+    burst.waiting.push(chat);
+    burst.lastAt = now;
+    if (!burst.replying) this.schedule(key, burst);
+    return Promise.resolve();
+  }
+
+  private schedule(key: string, burst: Burst) {
+    clearTimeout(burst.timer);
+    const due = Math.min(
+      burst.lastAt + BURST_QUIET_MS,
+      burst.firstAt + MAX_BURST_WAIT_MS,
+    );
+    burst.timer = setTimeout(
+      () => void this.answerBurst(key, burst),
+      Math.max(due - Date.now(), 0),
+    );
+  }
+
+  private async answerBurst(key: string, burst: Burst) {
+    burst.replying = true;
+    const chats = burst.waiting.splice(0);
+    try {
+      await this.answer(chats);
+    } catch (err) {
+      this.logger.error(`answering ${key} failed: ${(err as Error).message}`);
+    } finally {
+      burst.replying = false;
+      if (burst.waiting.length) this.schedule(key, burst);
+      else this.bursts.delete(key);
+    }
+  }
+
+  // Answers a burst as one message from the person, sent from the last one's
+  // socket. Each message is still saved on its own, the reply after the last.
+  private async answer(chats: IncomingChat[]) {
+    const last = chats[chats.length - 1];
+    const chat: IncomingChat = {
+      ...last,
+      text: chats.map((c) => c.text).join('\n'),
+    };
     const agent = await this.prisma.chatAgent.findFirst({
       where: { phoneNumberId: chat.phoneNumberId, status: 'active' },
       include: {
@@ -134,23 +216,25 @@ export class ChatResponderService {
     if (!agent) return;
 
     const reply = await this.replyAs(agent, chat);
-    // Saved for the dashboard whether or not a reply went out: the message
+    // Saved for the dashboard whether or not a reply went out: the messages
     // still arrived. Losing the copy mustn't disturb the reply path.
-    await recordChatTurn(this.prisma, {
-      userId: agent.userId,
-      phoneNumberId: chat.phoneNumberId,
-      chatAgentId: agent.id,
-      peerJid: chat.peerJid,
-      peerPhone: chat.peerPhone,
-      peerName: chat.peerName,
-      waMessageId: chat.messageId,
-      userMessage: chat.text,
-      assistantMessage: reply,
-    }).catch((err: Error) =>
-      this.logger.error(
-        `saving chat agent ${agent.id}'s conversation failed: ${err.message}`,
-      ),
-    );
+    for (const [i, message] of chats.entries()) {
+      await recordChatTurn(this.prisma, {
+        userId: agent.userId,
+        phoneNumberId: message.phoneNumberId,
+        chatAgentId: agent.id,
+        peerJid: message.peerJid,
+        peerPhone: message.peerPhone,
+        peerName: message.peerName,
+        waMessageId: message.messageId,
+        userMessage: message.text,
+        assistantMessage: i === chats.length - 1 ? reply : undefined,
+      }).catch((err: Error) =>
+        this.logger.error(
+          `saving chat agent ${agent.id}'s conversation failed: ${err.message}`,
+        ),
+      );
+    }
   }
 
   // A message a person sent from the dashboard joins the agent's history, so
@@ -221,18 +305,25 @@ export class ChatResponderService {
             ? ORDERS_OFF_PROMPT
             : undefined,
         CHAT_REPLY_STYLE,
+        CHAT_FACTS_RULE,
         dateContext(new Date(), zoneForPhone(agent.phoneNumber?.phoneNumber)),
         await this.knowledgeFor(agent, key, chat.text),
       ]
         .filter(Boolean)
         .join('\n\n');
+      const summary = this.summaries.get(key);
+      const incoming = new HumanMessage({
+        id: randomUUID(),
+        content: chat.text,
+      });
       const messages: BaseMessage[] = [
+        ...(summary ? [summary] : []),
         ...this.recent(key).map((turn) =>
           turn.role === 'user'
             ? new HumanMessage(turn.text)
             : new AIMessage(turn.text),
         ),
-        new HumanMessage(chat.text),
+        incoming,
       ];
       const confirmed =
         !!toolbox?.takesOrders &&
@@ -244,7 +335,7 @@ export class ChatResponderService {
           toolbox.orderFields,
         ));
       if (confirmed) toolbox.confirmOrder();
-      const generated = await this.generate(apiKey, messages, {
+      const generated = await this.generate(key, apiKey, messages, incoming, {
         prompt,
         toolbox,
         requiredTool: confirmed ? ORDER_FUNCTION : undefined,
@@ -402,16 +493,34 @@ export class ChatResponderService {
   }
 
   // Asks the agent for the reply. The text of every model call is kept, so
-  // anything said before a tool call still reaches the person.
+  // anything said before a tool call still reaches the person. A summary
+  // replaces the messages before it, so the reply is found by what follows the
+  // incoming message, not by position.
   private async generate(
+    key: string,
     apiKey: string,
     messages: BaseMessage[],
+    incoming: HumanMessage,
     context: ReplyContext,
   ) {
     this.agent ??= createReplyAgent(apiKey);
     const result = await this.agent.invoke({ messages }, { context });
+    const at = result.messages.findIndex((m) => m.id === incoming.id);
+    const [first] = result.messages;
+    if (
+      at > 0 &&
+      isChatSummary(first) &&
+      first.text !== this.summaries.get(key)?.text
+    ) {
+      // A new summary: only the turns the middleware kept, the ones between it
+      // and the incoming message, stay word for word.
+      const kept = at - 1;
+      const turns = this.history.get(key) ?? [];
+      this.summaries.set(key, first);
+      this.history.set(key, kept ? turns.slice(-kept) : []);
+    }
     return result.messages
-      .slice(messages.length)
+      .slice(at + 1 || messages.length)
       .filter((message) => AIMessage.isInstance(message))
       .map((message) => message.text.trim())
       .filter(Boolean)
@@ -424,6 +533,8 @@ export class ChatResponderService {
     const since = Date.now() - HISTORY_WINDOW_MS;
     const recent = turns.filter((turn) => turn.at >= since).slice(-MAX_HISTORY);
     while (recent[0]?.role === 'assistant') recent.shift();
+    // The summary goes when the chat does.
+    if (!recent.length) this.summaries.delete(key);
     return recent;
   }
 
@@ -439,6 +550,7 @@ export class ChatResponderService {
     if (this.history.size > MAX_CONVERSATIONS) {
       const [oldest] = this.history.keys();
       this.history.delete(oldest);
+      this.summaries.delete(oldest);
     }
   }
 }
