@@ -8,5 +8,6 @@ import { KnowledgeBasesService } from './knowledge-bases.service';
   imports: [AuthModule],
   controllers: [KnowledgeBasesController],
   providers: [KnowledgeBasesService, IndexerService],
+  exports: [IndexerService],
 })
 export class KnowledgeBasesModule {}

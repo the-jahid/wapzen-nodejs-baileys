@@ -13,6 +13,19 @@ const DELETE_BATCH = 1000;
 const EMBED_BATCH = 64;
 const DEFAULT_EMBEDDING_MODEL = 'text-embedding-3-large';
 const DEFAULT_DIMENSION = 3072;
+// Pinecone answers every query with its nearest records whether or not they
+// are about the question. Measured on the Go server: questions an index can
+// answer score 0.17-0.46, ones it can't 0.03-0.07.
+const MIN_RELEVANCE_SCORE = 0.15;
+
+// One passage found for a question.
+export type KnowledgeSnippet = { title: string; text: string; score: number };
+
+type QueryMatch = {
+  id: string;
+  score?: number;
+  metadata?: { title?: unknown; text?: unknown };
+};
 
 type StoredSource = {
   id: string;
@@ -150,6 +163,32 @@ export class IndexerService {
     }
   }
 
+  // The best passages for a question across namespaces, most relevant first.
+  // One namespace failing leaves the others' answers; only every one failing
+  // throws. This shares embed() with indexing because a question embedded by
+  // another model wouldn't be comparable to the chunks.
+  async search(
+    namespaces: string[],
+    query: string,
+    topK: number,
+  ): Promise<KnowledgeSnippet[]> {
+    const question = query.trim();
+    if (!question || !namespaces.length) return [];
+    const [vector] = await this.embed([question]);
+
+    const results = await Promise.allSettled(
+      namespaces.map((namespace) => this.query(namespace, vector, topK)),
+    );
+    const failed = results.find((r) => r.status === 'rejected');
+    if (failed && results.every((r) => r.status === 'rejected')) {
+      throw failed.reason;
+    }
+    return results
+      .flatMap((r) => (r.status === 'fulfilled' ? r.value : []))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
+  }
+
   private namespaceOf(kb: KnowledgeBase): string {
     if (!kb.pineconeNamespace) {
       throw new Error(`knowledge base ${kb.id} has no vector-store namespace`);
@@ -223,6 +262,24 @@ export class IndexerService {
     }
   }
 
+  // Asks for the full topK from each namespace, because the merge in search()
+  // decides which are worth keeping. A namespace that holds nothing is a 404.
+  private async query(namespace: string, vector: number[], topK: number) {
+    try {
+      const res = await this.pinecone('/query', {
+        namespace,
+        vector,
+        topK,
+        includeMetadata: true,
+      });
+      const body = (await res.json()) as { matches?: QueryMatch[] };
+      return (body.matches ?? []).flatMap(toSnippet);
+    } catch (err) {
+      if (err instanceof UpstreamError && err.status === 404) return [];
+      throw err;
+    }
+  }
+
   private async pinecone(path: string, payload: unknown) {
     const res = await fetch(this.pineconeHost + path, {
       method: 'POST',
@@ -241,7 +298,25 @@ export class IndexerService {
         (await res.text().catch(() => '')).trim(),
       );
     }
+    return res;
   }
+}
+
+// Reads back what indexSources wrote with a chunk. A match too weak to use, or
+// with no text, is dropped so it doesn't take a slot in the ranked list.
+function toSnippet(match: QueryMatch): KnowledgeSnippet[] {
+  const score = match.score ?? 0;
+  const { title, text } = match.metadata ?? {};
+  const passage = typeof text === 'string' ? text.trim() : '';
+  if (score < MIN_RELEVANCE_SCORE || !passage) return [];
+  const name = typeof title === 'string' ? title.trim() : '';
+  return [
+    {
+      title: name || match.id.split(CHUNK_ID_SEPARATOR)[0],
+      text: passage,
+      score,
+    },
+  ];
 }
 
 class UpstreamError extends Error {

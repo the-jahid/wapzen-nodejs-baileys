@@ -81,7 +81,11 @@ export class ChatAgentsService {
       );
       await ensureNameFree(tx, userId, name);
       await ensurePhoneNumberFree(tx, userId, phoneNumberId);
-      ensureNoKnowledgeBases(req);
+      const knowledgeBaseIds = await ownedKnowledgeBaseIds(
+        tx,
+        userId,
+        req.knowledge_base?.knowledge_base_ids,
+      );
       const toolIds = await ownedToolIds(tx, userId, req.tools?.tool_ids);
 
       const row = await tx.chatAgent.create({
@@ -95,6 +99,7 @@ export class ChatAgentsService {
           temperature: req.model?.temperature ?? DEFAULT_TEMPERATURE,
           systemPrompt:
             req.prompt?.system_prompt?.trim() || DEFAULT_SYSTEM_PROMPT,
+          knowledgeBases: { create: knowledgeBaseRows(knowledgeBaseIds) },
           tools: { create: attachmentRows(toolIds) },
         },
         include: resourceInclude,
@@ -157,9 +162,16 @@ export class ChatAgentsService {
       if (req.prompt?.system_prompt !== undefined) {
         data.systemPrompt = req.prompt.system_prompt.trim();
       }
-      ensureNoKnowledgeBases(req);
-      // A tool_ids list replaces the attached set wholesale; leaving it out
-      // keeps the set as it is.
+      // An id list replaces the attached set wholesale; leaving it out keeps
+      // the set as it is.
+      const kbIds = req.knowledge_base?.knowledge_base_ids;
+      if (kbIds !== undefined) {
+        const owned = await ownedKnowledgeBaseIds(tx, userId, kbIds);
+        data.knowledgeBases = {
+          deleteMany: {},
+          create: knowledgeBaseRows(owned),
+        };
+      }
       if (req.tools?.tool_ids !== undefined) {
         const toolIds = await ownedToolIds(tx, userId, req.tools.tool_ids);
         data.tools = { deleteMany: {}, create: attachmentRows(toolIds) };
@@ -257,12 +269,23 @@ async function ensurePhoneNumberFree(
   if (holder) throw phoneTaken();
 }
 
-// Knowledge bases can't be attached to a chat agent on this server yet, so
-// any id sent can't be found. An empty list just says "nothing attached".
-function ensureNoKnowledgeBases(req: ChatAgentInput) {
-  if (normalizeIds(req.knowledge_base?.knowledge_base_ids).length > 0) {
+// The requested knowledge base ids, checked to all belong to the caller: the
+// foreign key alone would accept another account's knowledge base. One that
+// isn't theirs reads the same as one that doesn't exist.
+async function ownedKnowledgeBaseIds(
+  tx: Tx,
+  userId: string,
+  ids: string[] | undefined,
+) {
+  const wanted = normalizeIds(ids);
+  if (!wanted.length) return wanted;
+  const owned = await tx.knowledgeBase.count({
+    where: { id: { in: wanted }, userId },
+  });
+  if (owned !== wanted.length) {
     throw apiError(HttpStatus.NOT_FOUND, 'knowledge base not found');
   }
+  return wanted;
 }
 
 // The requested tool ids, checked to all belong to the caller: the foreign
@@ -283,6 +306,14 @@ function attachmentRows(toolIds: string[]) {
   const start = Date.now();
   return toolIds.map((toolId, i) => ({
     toolId,
+    createdAt: new Date(start + i),
+  }));
+}
+
+function knowledgeBaseRows(knowledgeBaseIds: string[]) {
+  const start = Date.now();
+  return knowledgeBaseIds.map((knowledgeBaseId, i) => ({
+    knowledgeBaseId,
     createdAt: new Date(start + i),
   }));
 }

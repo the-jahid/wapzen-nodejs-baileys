@@ -14,18 +14,18 @@ datasource db {
 
 // Mirrors the Go server's users table (migrations 00001 + 00059).
 model User {
-  id        String    @id @default(dbgenerated("(gen_random_uuid())::text"))
-  email     String    @unique
-  oauthId   String    @unique @map("oauth_id")
-  username  String?
+  id           String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  email        String    @unique
+  oauthId      String    @unique @map("oauth_id")
+  username     String?
   // An operator can block an account; setting this back to null unblocks it.
-  blockedAt DateTime? @map("blocked_at") @db.Timestamptz
+  blockedAt    DateTime? @map("blocked_at") @db.Timestamptz
   // Lifetime AI replies sent by the account's agents.
-  aiReplyCount Int    @default(0) @map("ai_reply_count")
+  aiReplyCount Int       @default(0) @map("ai_reply_count")
   // How many replies the account may send: 50 free, raised for a paid plan.
-  aiReplyLimit Int    @default(50) @map("ai_reply_limit")
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  aiReplyLimit Int       @default(50) @map("ai_reply_limit")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   chatAgents        ChatAgent[]
   phoneNumbers      PhoneNumber[]
@@ -56,10 +56,11 @@ model ChatAgent {
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  phoneNumber   PhoneNumber?       @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
-  conversations ChatConversation[]
-  tools         ChatAgentTool[]
+  user           User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phoneNumber    PhoneNumber?             @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+  conversations  ChatConversation[]
+  tools          ChatAgentTool[]
+  knowledgeBases ChatAgentKnowledgeBase[]
 
   @@unique([userId, agentName])
   @@index([userId])
@@ -181,12 +182,28 @@ model KnowledgeBase {
   createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
   updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  user    User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  sources KnowledgeBaseSource[]
+  user        User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sources     KnowledgeBaseSource[]
+  attachments ChatAgentKnowledgeBase[]
 
   @@unique([userId, name])
   @@index([userId])
   @@map("knowledge_bases")
+}
+
+// Which knowledge bases a chat agent answers from. Deleting either side removes
+// the row. createdAt is the attachment order.
+model ChatAgentKnowledgeBase {
+  chatAgentId     String   @map("chat_agent_id")
+  knowledgeBaseId String   @map("knowledge_base_id")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  chatAgent     ChatAgent     @relation(fields: [chatAgentId], references: [id], onDelete: Cascade)
+  knowledgeBase KnowledgeBase @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+
+  @@id([chatAgentId, knowledgeBaseId])
+  @@index([knowledgeBaseId])
+  @@map("chat_agent_knowledge_bases")
 }
 
 // Mirrors the Go server's knowledge_base_sources table (migrations 00033–00035).

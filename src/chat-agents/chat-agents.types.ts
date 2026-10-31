@@ -50,9 +50,13 @@ export type ChatAgentResource = {
   reply_limit_reached: boolean;
 };
 
-// What a resource needs beyond the row: attached tools, in the order they were
-// attached, and the owner's reply allowance.
+// What a resource needs beyond the row: attached tools and knowledge bases, in
+// the order they were attached, and the owner's reply allowance.
 export const resourceInclude = {
+  knowledgeBases: {
+    select: { knowledgeBaseId: true },
+    orderBy: [{ createdAt: 'asc' }, { knowledgeBaseId: 'asc' }],
+  },
   tools: {
     select: { toolId: true },
     orderBy: [{ createdAt: 'asc' }, { toolId: 'asc' }],
@@ -62,6 +66,7 @@ export const resourceInclude = {
 
 export function toResource(
   row: ChatAgent & {
+    knowledgeBases: { knowledgeBaseId: string }[];
     tools: { toolId: string }[];
     user: { aiReplyCount: number; aiReplyLimit: number };
   },
@@ -81,8 +86,9 @@ export function toResource(
       temperature: row.temperature,
     },
     prompt: { system_prompt: row.systemPrompt },
-    // Knowledge bases can't be attached to a chat agent on this server yet.
-    knowledge_base: { knowledge_base_ids: [] },
+    knowledge_base: {
+      knowledge_base_ids: row.knowledgeBases.map((k) => k.knowledgeBaseId),
+    },
     tools: { tool_ids: row.tools.map((t) => t.toolId) },
     reply_limit_reached: row.user.aiReplyCount >= row.user.aiReplyLimit,
   };

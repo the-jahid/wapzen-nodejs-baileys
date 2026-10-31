@@ -8,6 +8,12 @@ import {
 import { activity } from '../activity/activity';
 import { recordChatTurn } from '../chat-conversations/chat-conversations.store';
 import type { ChatAgent, Tool } from '../generated/prisma/client';
+import {
+  CHAT_KNOWLEDGE_TOP_K,
+  chatKnowledgePrompt,
+  chatKnowledgeQuery,
+} from '../knowledge-bases/chat-knowledge';
+import { IndexerService } from '../knowledge-bases/indexer.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChatToolbox, dateContext, zoneForPhone } from '../tools/chat-toolbox';
 import { createReplyAgent, type ReplyContext } from './reply-agent';
@@ -44,9 +50,11 @@ const LIMIT_REACHED_MESSAGE =
 type Turn = { role: 'user' | 'assistant'; text: string; at: number };
 
 // The agent with what a reply needs: its attached tools, in attachment
-// order, and its number, whose country dates the conversation.
+// order, the knowledge bases it reads, and its number, whose country dates the
+// conversation.
 type ReplyingAgent = ChatAgent & {
   tools: { tool: Tool }[];
+  knowledgeBases: { knowledgeBase: { pineconeNamespace: string | null } }[];
   phoneNumber: { phoneNumber: string | null } | null;
   user: { email: string };
 };
@@ -81,6 +89,7 @@ export class ChatResponderService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly indexer: IndexerService,
   ) {}
 
   async respond(chat: IncomingChat): Promise<void> {
@@ -90,6 +99,11 @@ export class ChatResponderService {
         tools: {
           include: { tool: true },
           orderBy: [{ createdAt: 'asc' }, { toolId: 'asc' }],
+        },
+        knowledgeBases: {
+          select: {
+            knowledgeBase: { select: { pineconeNamespace: true } },
+          },
         },
         phoneNumber: { select: { phoneNumber: true } },
         user: { select: { email: true } },
@@ -169,13 +183,14 @@ export class ChatResponderService {
         chat.send,
       );
       // OpenAI caches the longest prefix it has seen before, so the part that
-      // stays the same between replies goes first. The date changes every
-      // minute; in front it would make every reply a cache miss.
+      // stays the same between replies goes first. The date and the passages
+      // change; in front they would make every reply a cache miss.
       const prompt = [
         agent.systemPrompt.trim(),
         toolbox?.instructions(),
         CHAT_REPLY_STYLE,
         dateContext(new Date(), zoneForPhone(agent.phoneNumber?.phoneNumber)),
+        await this.knowledgeFor(agent, key, chat.text),
       ]
         .filter(Boolean)
         .join('\n\n');
@@ -221,6 +236,33 @@ export class ChatResponderService {
           })
           .catch(() => undefined);
       }
+    }
+  }
+
+  // The passages for this message from the agent's knowledge bases, as prompt
+  // text. A failed lookup is logged and the agent answers from its prompt
+  // alone: a thinner reply beats none.
+  private async knowledgeFor(agent: ReplyingAgent, key: string, text: string) {
+    const namespaces = agent.knowledgeBases.flatMap(
+      ({ knowledgeBase }) => knowledgeBase.pineconeNamespace ?? [],
+    );
+    if (!namespaces.length) return '';
+    if (!this.indexer.enabled) {
+      this.logger.warn(
+        `chat agent ${agent.id} has knowledge bases but the vector store isn't configured`,
+      );
+      return '';
+    }
+    try {
+      const query = chatKnowledgeQuery(this.recent(key), text);
+      return chatKnowledgePrompt(
+        await this.indexer.search(namespaces, query, CHAT_KNOWLEDGE_TOP_K),
+      );
+    } catch (err) {
+      this.logger.error(
+        `chat agent ${agent.id} knowledge lookup failed: ${(err as Error).message}`,
+      );
+      return '';
     }
   }
 
