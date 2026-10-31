@@ -289,6 +289,19 @@ export class ChatResponderService {
         chat.send,
         await this.ordersFor(agent, chat),
       );
+      // Both ask a different service before the reply can start, so they run
+      // together.
+      const [knowledge, confirmed] = await Promise.all([
+        this.knowledgeFor(agent, key, chat.text),
+        !!toolbox?.takesOrders &&
+          this.orderConfirmed(
+            apiKey,
+            key,
+            chat.text,
+            agent,
+            toolbox.orderFields,
+          ),
+      ]);
       // OpenAI caches the longest prefix it has seen before, so the part that
       // stays the same between replies goes first. The date and the passages
       // change; in front they would make every reply a cache miss.
@@ -307,7 +320,7 @@ export class ChatResponderService {
         CHAT_REPLY_STYLE,
         CHAT_FACTS_RULE,
         dateContext(new Date(), zoneForPhone(agent.phoneNumber?.phoneNumber)),
-        await this.knowledgeFor(agent, key, chat.text),
+        knowledge,
       ]
         .filter(Boolean)
         .join('\n\n');
@@ -325,16 +338,7 @@ export class ChatResponderService {
         ),
         incoming,
       ];
-      const confirmed =
-        !!toolbox?.takesOrders &&
-        (await this.orderConfirmed(
-          apiKey,
-          key,
-          chat.text,
-          agent,
-          toolbox.orderFields,
-        ));
-      if (confirmed) toolbox.confirmOrder();
+      if (confirmed) toolbox!.confirmOrder();
       const generated = await this.generate(key, apiKey, messages, incoming, {
         prompt,
         toolbox,

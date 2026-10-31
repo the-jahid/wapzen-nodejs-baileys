@@ -14,10 +14,18 @@ import {
 import { DEFAULT_MODEL } from '../chat-agents/chat-agents.types';
 import type { ChatToolbox } from '../tools/chat-toolbox';
 
-// Reasoning counts against this. At medium effort it took up to 2,048 tokens on
+// Reasoning counts against this. At medium effort it took up to 2,304 tokens on
 // a short prompt, and a reply that runs out has no text, so this is a safety
 // limit, not a length limit: chatReplyStyle keeps replies short.
 const REPLY_MAX_TOKENS = 6000;
+// Replies reason at low effort. Measured 2026-11-01 on a shop prompt: medium
+// took 2.6–10.4s a call (2,304 reasoning tokens to answer "-"), and a reply can
+// chain several calls; low took 1.8–2.5s and still caught that the shop was
+// closed, which minimal (about 1.2s) missed.
+const REPLY_EFFORT = 'low';
+// One model call that takes longer than this is abandoned (and retried once),
+// so a stuck request can't leave the chat on "typing" for minutes.
+const CALL_TIMEOUT_MS = 20_000;
 // How many times one reply may call tools. The last round is asked for text
 // only, so a model that keeps calling tools still ends up answering.
 const MAX_TOOL_ROUNDS = 3;
@@ -116,13 +124,14 @@ const chatAgentTools = createMiddleware({
 function chatModel(
   apiKey: string,
   maxTokens: number,
-  effort: 'minimal' | 'medium' = 'medium',
+  effort: 'minimal' | 'low' | 'medium' = REPLY_EFFORT,
 ) {
   return new ChatOpenAI({
     model: DEFAULT_MODEL,
     apiKey,
     maxTokens,
-    maxRetries: 2,
+    maxRetries: 1,
+    timeout: CALL_TIMEOUT_MS,
     reasoning: { effort },
   });
 }
