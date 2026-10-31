@@ -25,6 +25,11 @@ export type LoginState = {
   qrAt?: number;
   qrCount: number;
   pairingCode?: string;
+  // The number a pairing code was asked for. The row only gets its number once
+  // linked, and until then it stays out of the list by not having one.
+  phoneNumber?: string;
+  // The phone has confirmed the link; only reconnecting is left.
+  paired?: boolean;
 };
 
 export type PhoneNumberResource = {
@@ -48,7 +53,7 @@ export async function toResource(
 ): Promise<PhoneNumberResource> {
   const resource: PhoneNumberResource = {
     id: row.id,
-    phone_number: row.phoneNumber,
+    phone_number: row.phoneNumber ?? login?.phoneNumber ?? null,
     label: row.label,
     wa_jid: row.waJid,
     status: row.status,

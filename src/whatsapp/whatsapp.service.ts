@@ -7,9 +7,11 @@ import {
 } from '@nestjs/common';
 import makeWASocket, {
   AuthenticationState,
+  BinaryNode,
   Browsers,
   DisconnectReason,
   fetchLatestWaWebVersion,
+  getBinaryNodeChild,
   isJidBroadcast,
   isJidGroup,
   isJidNewsletter,
@@ -66,6 +68,11 @@ const RESUME_SLOT_MS = 30_000;
 // one is still running its logins, so a pending row younger than this may be
 // someone scanning right now, and the old server is gone by the time it passes.
 const LOGIN_MAX_MS = 5 * 60_000;
+// Connections a just-paired number may lose before the dashboard is told. The
+// phone already says linked, so it's worth a few quick tries first.
+const PAIRED_RETRIES = 3;
+// WhatsApp's "rate-overlimit", answered to too many pairing code requests.
+const PAIRING_RATE_LIMITED = 429;
 // Baileys' own log output, off unless VERBOSE_LOGS=true.
 const BAILEYS_LOG_LEVEL =
   process.env.VERBOSE_LOGS === 'true' ? 'error' : 'silent';
@@ -92,6 +99,15 @@ const LID_CACHE_SIZE = 1_000;
 export class NumberNotConnectedError extends Error {
   constructor() {
     super('phone number is not connected');
+  }
+}
+
+class PairingRefusedError extends Error {
+  constructor(
+    readonly code: number,
+    text: string,
+  ) {
+    super(`WhatsApp refused the pairing code (${code} ${text})`);
   }
 }
 
@@ -455,6 +471,7 @@ export class WhatsAppService
     const login: LoginState = {
       email,
       byCode: !!phoneNumber,
+      phoneNumber,
       startedAt: Date.now(),
       qrCount: 0,
     };
@@ -490,6 +507,15 @@ export class WhatsAppService
   private loginError(err: Error, byCode: boolean, email: string) {
     this.logger.warn(`login failed: ${err.message}`);
     reportLogin({ email, byCode }, 'failed', err.message);
+    if (
+      err instanceof PairingRefusedError &&
+      err.code === PAIRING_RATE_LIMITED
+    ) {
+      return apiError(
+        HttpStatus.TOO_MANY_REQUESTS,
+        'WhatsApp has paused new codes for this number after too many tries. Wait a while, then get a new code, or scan the QR code instead.',
+      );
+    }
     if (byCode) {
       return apiError(
         HttpStatus.BAD_REQUEST,
@@ -601,11 +627,16 @@ export class WhatsAppService
     const trace: DeviceTrace = {};
     this.traces.set(sock, trace);
     let pairingRequested = false;
+    let saving = Promise.resolve();
 
+    // One at a time, or an older save can land last: pairing updates the creds
+    // several times within moments, and the last one is what makes it a device.
     sock.ev.on('creds.update', () => {
-      saveCreds().catch((err: Error) =>
-        this.logger.error(`save creds ${id} failed: ${err.message}`),
-      );
+      saving = saving
+        .then(saveCreds)
+        .catch((err: Error) =>
+          this.logger.error(`save creds ${id} failed: ${err.message}`),
+        );
     });
 
     sock.ev.on('connection.update', (update) => {
@@ -631,6 +662,8 @@ export class WhatsAppService
         // the socket only opens after a reconnect, and a restart in that gap
         // must find a number to resume, not a draft to delete.
         if (isNewLogin && state.creds.me) {
+          const login = this.logins.get(id);
+          if (login) login.paired = true;
           await this.prisma.phoneNumber.updateMany({
             where: { id },
             data: { waJid: state.creds.me.id },
@@ -641,7 +674,10 @@ export class WhatsAppService
           if (pairingRequested) return;
           pairingRequested = true;
           try {
-            const pairingCode = await sock.requestPairingCode(opts.pairWith);
+            const [, pairingCode] = await Promise.all([
+              pairingAccepted(sock),
+              sock.requestPairingCode(opts.pairWith),
+            ]);
             const login = this.logins.get(id);
             if (login) login.pairingCode = pairingCode;
             opts.onCode?.();
@@ -677,6 +713,8 @@ export class WhatsAppService
 
         if (connection === 'close') {
           opts.onSettled?.();
+          // The reconnect after pairing reads back what was just being saved.
+          await saving;
           await this.handleClose(
             id,
             sock,
@@ -862,8 +900,10 @@ export class WhatsAppService
     if (!row) return;
 
     // A login nobody finished. One that never linked anything is dropped,
-    // which is what tells the dashboard to ask for a fresh code.
-    if (this.logins.has(id) || !row.waJid || !hasCreds) {
+    // which is what tells the dashboard to ask for a fresh code. One the phone
+    // has paired is finished, however this connection ended.
+    const login = this.logins.get(id);
+    if (!login?.paired && (login || !row.waJid || !hasCreds)) {
       if (statusCode === DisconnectReason.timedOut) {
         this.endLogin(id, 'expired', 'never completed on the phone');
       } else {
@@ -884,16 +924,26 @@ export class WhatsAppService
       return;
     }
 
-    await this.prisma.phoneNumber.update({
-      where: { id },
-      data: { status: 'disconnected' },
-    });
+    const failures = (this.failures.get(id) ?? 0) + 1;
+    this.failures.set(id, failures);
+
+    // The dashboard stops waiting at 'disconnected', so a number still on its
+    // way in after pairing stays pending through its first retries.
+    if (!login || failures >= PAIRED_RETRIES) {
+      this.endLogin(
+        id,
+        'failed',
+        `paired, then connection closed (${statusCode ?? 'no code'})`,
+      );
+      await this.prisma.phoneNumber.update({
+        where: { id },
+        data: { status: 'disconnected' },
+      });
+    }
 
     // A linked number dropped: keep retrying, backing off while it keeps
     // failing, and spread out (±50%) so numbers that dropped together (a
     // network blip) don't all reconnect in the same instant.
-    const failures = (this.failures.get(id) ?? 0) + 1;
-    this.failures.set(id, failures);
     const delay =
       Math.min(
         RECONNECT_DELAY_MS * 2 ** (failures - 1),
@@ -917,6 +967,31 @@ function reportLogin(
   const kind = login.byCode ? 'pairing code' : 'QR scan';
   const suffix = detail ? ` - ${detail}` : '';
   activity(`${kind} ${outcome}: ${login.email}${suffix}`);
+}
+
+// WhatsApp's answer to a pairing code request. requestPairingCode returns as
+// soon as the request is sent, before the answer arrives (170ms before, on the
+// one live test), so a code WhatsApp refused would otherwise still be shown and
+// could never work. Call it first: the answer can't be listened for afterwards.
+// Accepted doesn't mean the number is on WhatsApp; a fictional one was accepted.
+function pairingAccepted(sock: WASocket) {
+  return new Promise<void>((resolve, reject) => {
+    const accepted = () => {
+      stop();
+      resolve();
+    };
+    const refused = (node: BinaryNode) => {
+      stop();
+      const { code, text } = getBinaryNodeChild(node, 'error')?.attrs ?? {};
+      reject(new PairingRefusedError(Number(code), text));
+    };
+    const stop = () => {
+      sock.ws.off('CB:iq,,link_code_companion_reg', accepted);
+      sock.ws.off('CB:iq,type:error', refused);
+    };
+    sock.ws.on('CB:iq,,link_code_companion_reg', accepted);
+    sock.ws.on('CB:iq,type:error', refused);
+  });
 }
 
 // The status code Baileys closed a socket with, if any.
