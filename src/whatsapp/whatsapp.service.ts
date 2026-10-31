@@ -9,7 +9,7 @@ import makeWASocket, {
   AuthenticationState,
   Browsers,
   DisconnectReason,
-  fetchLatestBaileysVersion,
+  fetchLatestWaWebVersion,
   isJidBroadcast,
   isJidGroup,
   isJidNewsletter,
@@ -18,6 +18,7 @@ import makeWASocket, {
   jidNormalizedUser,
   makeCacheableSignalKeyStore,
   proto,
+  ReachoutTimelockState,
   S_WHATSAPP_NET,
   WAMessage,
   WASocket,
@@ -44,6 +45,14 @@ type ConnectOptions = {
   onSettled?: () => void;
 };
 
+// What led up to a socket's end, so a logout can say whether it looks like
+// WhatsApp's doing or someone pressing Log out on the phone.
+type DeviceTrace = {
+  openedAt?: number;
+  sentAt?: number;
+  restriction?: string;
+};
+
 const FIRST_CODE_TIMEOUT_MS = 30_000;
 // A dropped number retries after 5s, doubling while it keeps failing.
 const RECONNECT_DELAY_MS = 5_000;
@@ -61,6 +70,7 @@ const LOGIN_MAX_MS = 5 * 60_000;
 const BAILEYS_LOG_LEVEL =
   process.env.VERBOSE_LOGS === 'true' ? 'error' : 'silent';
 const VERSION_TTL_MS = 60 * 60_000;
+const VERSION_FETCH_TIMEOUT_MS = 10_000;
 // How long an unlink may wait for WhatsApp, connecting included.
 const UNLINK_TIMEOUT_MS = 20_000;
 // Close codes meaning WhatsApp no longer accepts a device's keys at all.
@@ -106,6 +116,7 @@ export class WhatsAppService
   // A login that linked a number the account already had moves onto that
   // number's row; the dashboard keeps polling the login's id, so it's mapped.
   private readonly relinked = new Map<string, string>();
+  private readonly traces = new WeakMap<WASocket, DeviceTrace>();
   private shuttingDown = false;
   private version?: { value: WAVersion; at: number };
 
@@ -306,7 +317,7 @@ export class WhatsAppService
   async logout(userId: string, id: string) {
     const row = await this.owned(userId, id);
     await this.unlinkOrFail(id, row.waJid);
-    await this.reportGone(id, 'number removed');
+    await this.reportNumber(id, 'number removed');
     await this.deleteRow(id);
   }
 
@@ -321,7 +332,13 @@ export class WhatsAppService
     if (!sock || row?.status !== 'connected' || this.logins.has(id)) {
       throw new NumberNotConnectedError();
     }
-    await sock.sendMessage(jid, { text });
+    await this.sendFrom(sock, jid, text);
+  }
+
+  private sendFrom(sock: WASocket, jid: string, text: string) {
+    const trace = this.traces.get(sock);
+    if (trace) trace.sentAt = Date.now();
+    return sock.sendMessage(jid, { text });
   }
 
   // unlink for a request: a WhatsApp that can't be reached is a 502, and the
@@ -485,16 +502,22 @@ export class WhatsAppService
     );
   }
 
-  // The current WhatsApp Web version (a stale one gets the socket refused).
-  // Fetched at most once an hour rather than on every connect: WhatsApp's
-  // forced reconnect right after a scan used to wait on it again.
+  // The current WhatsApp Web version (a stale one gets the socket refused),
+  // read from WhatsApp itself: fetchLatestBaileysVersion only returns the
+  // constant in Baileys' repo, which goes months between updates. Fetched at
+  // most once an hour rather than on every connect: WhatsApp's forced reconnect
+  // right after a scan used to wait on it again.
   private async waVersion() {
     if (this.version && Date.now() - this.version.at < VERSION_TTL_MS) {
       return this.version.value;
     }
-    const { version } = await fetchLatestBaileysVersion();
-    this.version = { value: version, at: Date.now() };
-    return version;
+    const { version, isLatest } = await fetchLatestWaWebVersion({
+      signal: AbortSignal.timeout(VERSION_FETCH_TIMEOUT_MS),
+    });
+    // A failed fetch returns the version Baileys shipped with: good for this
+    // connect, but not worth keeping for an hour.
+    if (isLatest) this.version = { value: version, at: Date.now() };
+    return this.version?.value ?? version;
   }
 
   private stopSocket(id: string) {
@@ -503,9 +526,9 @@ export class WhatsAppService
     void sock?.end(undefined);
   }
 
-  // One activity line for a linked number about to go. A draft has no number
-  // to report, and a failed lookup mustn't stop the delete.
-  private async reportGone(id: string, what: string) {
+  // One activity line about a linked number. A draft has no number to report,
+  // and a failed lookup mustn't stop whatever comes next.
+  private async reportNumber(id: string, what: string, detail?: string) {
     const row = await this.prisma.phoneNumber
       .findUnique({
         where: { id },
@@ -513,7 +536,8 @@ export class WhatsAppService
       })
       .catch(() => null);
     if (row?.phoneNumber) {
-      activity(`${what}: ${row.user.email} - ${row.phoneNumber}`);
+      const suffix = detail ? ` - ${detail}` : '';
+      activity(`${what}: ${row.user.email} - ${row.phoneNumber}${suffix}`);
     }
   }
 
@@ -556,6 +580,14 @@ export class WhatsAppService
         mappingCache: RecentCache<string>;
       }
     ).mappingCache = new RecentCache(LID_CACHE_SIZE);
+    // Baileys drops a contact's reply token when the account's server flag is
+    // off, but WhatsApp Web no longer reads that flag and always sends a valid
+    // one. Without it a reply reportedly counts as reaching out to a stranger,
+    // the thing WhatsApp restricts linked devices for.
+    Object.defineProperty(sock.serverProps, 'privacyTokenOn1to1', {
+      get: () => true,
+      set: () => undefined,
+    });
     return sock;
   }
 
@@ -566,6 +598,8 @@ export class WhatsAppService
     ]);
     const sock = this.makeSocket(state, version);
     this.sockets.set(id, sock);
+    const trace: DeviceTrace = {};
+    this.traces.set(sock, trace);
     let pairingRequested = false;
 
     sock.ev.on('creds.update', () => {
@@ -575,8 +609,24 @@ export class WhatsAppService
     });
 
     sock.ev.on('connection.update', (update) => {
-      const { connection, lastDisconnect, qr, isNewLogin } = update;
+      const { connection, lastDisconnect, qr, isNewLogin, reachoutTimeLock } =
+        update;
       void (async () => {
+        // WhatsApp can remove a device within a second of announcing this, so
+        // it's noted before anything that waits.
+        if (reachoutTimeLock) {
+          trace.restriction = reachoutTimeLock.isActive
+            ? describeRestriction(reachoutTimeLock)
+            : undefined;
+          if (trace.restriction) {
+            await this.reportNumber(
+              id,
+              'WhatsApp restricted a number',
+              trace.restriction,
+            );
+          }
+        }
+
         // The phone has linked this device. The row says so straight away:
         // the socket only opens after a reconnect, and a restart in that gap
         // must find a number to resume, not a draft to delete.
@@ -612,8 +662,17 @@ export class WhatsAppService
         }
 
         if (connection === 'open') {
+          trace.openedAt = Date.now();
           opts.onSettled?.();
           await this.markConnected(id, sock);
+          // The answer comes back through connection.update. An account
+          // restricted before this server sent anything wasn't restricted for
+          // its replies.
+          sock
+            .fetchAccountReachoutTimelock()
+            .catch((err: Error) =>
+              this.logger.warn(`restriction check ${id}: ${err.message}`),
+            );
         }
 
         if (connection === 'close') {
@@ -663,7 +722,7 @@ export class WhatsAppService
         peerName: message.pushName ?? undefined,
         messageId: message.key.id ?? undefined,
         text,
-        send: (reply) => sock.sendMessage(jid, { text: reply }),
+        send: (reply) => this.sendFrom(sock, jid, reply),
         setTyping: (typing) =>
           sock.sendPresenceUpdate(typing ? 'composing' : 'paused', jid),
         messageOwner: (notice) =>
@@ -778,10 +837,15 @@ export class WhatsAppService
       return;
     }
 
-    // Unlinked from the phone: the keys are useless now.
+    // Logged out, from the phone or by WhatsApp itself; the socket can't tell
+    // which. Either way the keys are useless now.
     if (statusCode === DisconnectReason.loggedOut) {
       this.endLogin(id, 'failed', 'WhatsApp refused the link');
-      await this.reportGone(id, 'number unlinked from the phone');
+      await this.reportNumber(
+        id,
+        'number logged out',
+        describeLogout(error, this.traces.get(sock)),
+      );
       await this.deleteRow(id);
       this.logger.log(`${id} logged out`);
       return;
@@ -859,6 +923,29 @@ function reportLogin(
 function closeCode(error: Error | undefined): number | undefined {
   return (error as { output?: { statusCode?: number } } | undefined)?.output
     ?.statusCode;
+}
+
+function describeRestriction(lock: ReachoutTimelockState) {
+  const ends = lock.timeEnforcementEnds?.toISOString();
+  return `restriction ${lock.enforcementType}${ends ? ` until ${ends}` : ''}`;
+}
+
+// WhatsApp's reason for a logout and what led up to it. A restriction or a
+// send just before points at WhatsApp; neither, at someone on the phone.
+function describeLogout(error: Error | undefined, trace?: DeviceTrace) {
+  const reason = (error as { data?: { attrs?: { type?: string } } } | undefined)
+    ?.data?.attrs?.type;
+  const secondsSince = (at: number) => Math.round((Date.now() - at) / 1000);
+  return [
+    reason ?? error?.message ?? 'no reason given',
+    trace?.openedAt
+      ? `${secondsSince(trace.openedAt)}s after connecting`
+      : 'before connecting',
+    trace?.sentAt
+      ? `last send ${secondsSince(trace.sentAt)}s earlier`
+      : 'nothing sent on this connection',
+    trace?.restriction ?? 'no restriction notice',
+  ].join(', ');
 }
 
 // The most recently used entries, the oldest dropped past max. It has the
