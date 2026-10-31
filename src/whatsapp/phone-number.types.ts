@@ -86,6 +86,9 @@ export type LoginRequest = {
   label?: string;
   phoneNumber?: string;
   byCode: boolean;
+  // Asked for QR by name, rather than by leaving the method out: a dashboard
+  // that opens a QR login by itself must not end a code someone is typing.
+  forceQr: boolean;
   phoneNumberId?: string;
   forceRepair: boolean;
 };
@@ -109,8 +112,8 @@ export function parseLoginRequest(body: unknown): LoginRequest {
   if (phoneNumber && !E164.test(phoneNumber)) {
     throw badRequest('phone_number must be in E.164 format');
   }
-  const method = text('pairing_method') ?? 'qr';
-  if (method !== 'qr' && method !== 'phone_code') {
+  const method = text('pairing_method');
+  if (method && method !== 'qr' && method !== 'phone_code') {
     throw badRequest('pairing_method must be qr or phone_code');
   }
   const phoneNumberId = text('phone_number_id');
@@ -125,7 +128,8 @@ export function parseLoginRequest(body: unknown): LoginRequest {
       'pairing_method phone_code needs phone_number and no phone_number_id',
     );
   }
-  return { label, phoneNumber, byCode, phoneNumberId, forceRepair };
+  const forceQr = method === 'qr';
+  return { label, phoneNumber, byCode, forceQr, phoneNumberId, forceRepair };
 }
 
 export function parseLogoutRequest(body: unknown): string {

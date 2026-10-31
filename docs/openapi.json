@@ -1525,7 +1525,7 @@
           },
           "pairing_method": {
             "default": "qr",
-            "description": "qr (scan a QR code) or phone_code (get an 8-character pairing_code to type into WhatsApp, for users who cannot scan). phone_code requires phone_number and takes no phone_number_id.",
+            "description": "qr (scan a QR code) or phone_code (get an 8-character pairing_code to type into WhatsApp, for users who cannot scan). phone_code requires phone_number and takes no phone_number_id. Left out, a running login is handed back whichever kind it is; sent as qr, a running pairing code login is replaced by a QR login once its first code is ready.",
             "enum": [
               "qr",
               "phone_code"

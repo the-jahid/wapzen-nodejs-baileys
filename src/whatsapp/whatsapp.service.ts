@@ -250,10 +250,16 @@ export class WhatsAppService
     });
     if (!req.byCode) {
       const live = running.find(
-        (row) => this.sockets.has(row.id) && this.logins.has(row.id),
+        (row) =>
+          this.sockets.has(row.id) &&
+          this.logins.has(row.id) &&
+          !(req.forceQr && this.logins.get(row.id)?.byCode),
       );
       if (live) return toResource(live, this.logins.get(live.id));
     }
+    const replaced = running.filter(
+      (row) => req.byCode || (req.forceQr && this.logins.get(row.id)?.byCode),
+    );
 
     const row = await this.prisma.phoneNumber.create({
       data: { userId, label: req.label },
@@ -271,17 +277,16 @@ export class WhatsAppService
     }
 
     // A code login replaces whatever the user had open, QR or an earlier code,
-    // but only now that the new code is in hand: if WhatsApp had refused it,
-    // the one still on screen would keep working. The dashboard also polls the
-    // old row until the new one comes back. One the phone linked in the
-    // meantime is a number now, so it stays.
-    if (req.byCode) {
-      for (const old of running) {
-        if (this.logins.get(old.id)?.paired) continue;
-        this.endLogin(old.id, 'cancelled', 'replaced by a new pairing code');
-        this.stopSocket(old.id);
-        await this.deleteRow(old.id);
-      }
+    // and a QR login asked for by name replaces a code, but only now that the
+    // new one is in hand: if WhatsApp had refused it, the one still on screen
+    // would keep working. The dashboard also polls the old row until the new
+    // one comes back. One the phone linked in the meantime is a number now, so
+    // it stays.
+    for (const old of replaced) {
+      if (this.logins.get(old.id)?.paired) continue;
+      this.endLogin(old.id, 'cancelled', 'replaced by a new login');
+      this.stopSocket(old.id);
+      await this.deleteRow(old.id);
     }
     return this.get(userId, row.id);
   }
