@@ -70,6 +70,25 @@ export async function recordChatTurn(prisma: PrismaService, turn: NewChatTurn) {
     ORDER BY t.ord`;
 }
 
+// The last `limit` messages between a number and a contact, oldest first.
+export async function latestChatMessages(
+  db: Db,
+  phoneNumberId: string,
+  peerJid: string,
+  limit: number,
+) {
+  const rows = await db.$queryRaw<
+    { role: 'user' | 'assistant'; text: string }[]
+  >`
+    SELECT m.role, m.content AS text
+    FROM chat_messages m
+    JOIN chat_conversations c ON c.id = m.conversation_id
+    WHERE c.phone_number_id = ${phoneNumberId} AND c.peer_jid = ${peerJid}
+    ORDER BY m.seq DESC
+    LIMIT ${limit}`;
+  return rows.reverse();
+}
+
 // The thread between a number and a contact, opened if this is its first
 // message, for anything that has to point at it before the turn is saved.
 export async function ensureConversation(

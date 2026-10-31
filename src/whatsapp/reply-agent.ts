@@ -37,12 +37,14 @@ const CONFIRMATION_TURNS = 6;
 
 const CONFIRMATION_FUNCTION = 'order_decision';
 
-// A chat this long, the summary included, gets summed up, keeping the last
-// CHAT_KEEP_MESSAGES word for word.
-export const CHAT_SUMMARY_AT = 20;
-const CHAT_KEEP_MESSAGES = 8;
+// The model always sees the last 10 exchanges of a chat word for word.
+export const CHAT_REMEMBER_MESSAGES = 20;
+// A chat this long, the summary and the new message included, gets summed up,
+// keeping the last CHAT_REMEMBER_MESSAGES and the new message word for word.
+export const CHAT_SUMMARY_AT = 30;
+const CHAT_KEEP_MESSAGES = CHAT_REMEMBER_MESSAGES + 1;
 const SUMMARY_MAX_TOKENS = 600;
-// Room for 12 messages of the longest replies REPLY_MAX_TOKENS allows.
+// Room for a dozen messages of the longest replies REPLY_MAX_TOKENS allows.
 const SUMMARY_INPUT_TOKENS = 80_000;
 // The summary goes back to the model as a customer message, never into the
 // system prompt: it carries the customer's words, and a live test had a

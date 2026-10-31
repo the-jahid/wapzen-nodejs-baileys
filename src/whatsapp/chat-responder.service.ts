@@ -8,6 +8,7 @@ import {
 } from '@langchain/core/messages';
 import { activity } from '../activity/activity';
 import {
+  latestChatMessages,
   recordChatTurn,
   resolvePeerPhones,
 } from '../chat-conversations/chat-conversations.store';
@@ -34,6 +35,7 @@ import {
   type ChatOrders,
 } from '../tools/chat-toolbox';
 import {
+  CHAT_REMEMBER_MESSAGES,
   CHAT_SUMMARY_AT,
   createConfirmationCheck,
   createReplyAgent,
@@ -64,11 +66,10 @@ const CHAT_FACTS_RULE =
 const BURST_QUIET_MS = 2_000;
 const MAX_BURST_WAIT_MS = 8_000;
 
-// The model remembers what was said in a chat in the last five minutes.
-const HISTORY_WINDOW_MS = 5 * 60_000;
-// The most it keeps word for word. The summary middleware sums a chat up before
-// it gets here, so this only stops a chat whose summaries keep failing from
-// growing. Keep it even, or trimming to the person's message loses one more.
+// The most a chat keeps word for word. The summary middleware sums a chat up
+// before it gets here, so this only stops a chat whose summaries keep failing
+// from growing. Keep it even, or trimming to the person's message loses one
+// more.
 const MAX_HISTORY = CHAT_SUMMARY_AT;
 // Chats kept in memory across every number; past this the one idle longest
 // is forgotten, so memory stays flat however many people write in.
@@ -85,7 +86,7 @@ const LIMIT_REACHED_MESSAGE =
   'You need a paid plan to keep your agent replying. The plan is $20 per month with unlimited messages.\n\n' +
   `To buy one, message us on WhatsApp: ${LIMIT_WHATSAPP_URL}`;
 
-type Turn = { role: 'user' | 'assistant'; text: string; at: number };
+type Turn = { role: 'user' | 'assistant'; text: string };
 
 // One chat's messages waiting to be answered together. Only one reply per chat
 // runs at a time; what arrives meanwhile waits for the next.
@@ -124,10 +125,11 @@ export type IncomingChat = {
 };
 
 // Answers a WhatsApp message as the chat agent live on the number it arrived
-// on, through a LangChain agent (reply-agent.ts). Like the Go server, conversation
-// the model's context is kept in memory (the last HISTORY_WINDOW_MS of each
-// chat), so it starts fresh after a restart; the readable record of every
-// thread is saved to chat_conversations.
+// on, through a LangChain agent (reply-agent.ts). The model's context is kept
+// in memory: a summary plus the latest turns of each chat. A chat that isn't
+// there (after a restart, or forgotten as idle) starts again from its last
+// CHAT_REMEMBER_MESSAGES in chat_conversations, the readable record of every
+// thread.
 @Injectable()
 export class ChatResponderService {
   private readonly logger = new Logger(ChatResponderService.name);
@@ -289,6 +291,7 @@ export class ChatResponderService {
         chat.send,
         await this.ordersFor(agent, chat),
       );
+      await this.loadHistory(key, chat);
       // Both ask a different service before the reply can start, so they run
       // together.
       const [knowledge, confirmed] = await Promise.all([
@@ -531,22 +534,37 @@ export class ChatResponderService {
       .join('\n\n');
   }
 
-  // The chat's turns still inside the window. The model's context has to open
-  // with the person's message, not a reply.
+  // Picks a chat back up from its saved messages when memory has none of it.
+  // A failed read is logged and the reply goes ahead without the history.
+  private async loadHistory(key: string, chat: IncomingChat) {
+    if (this.history.get(key)?.length) return;
+    try {
+      const turns = await latestChatMessages(
+        this.prisma,
+        chat.phoneNumberId,
+        chat.peerJid,
+        CHAT_REMEMBER_MESSAGES,
+      );
+      this.history.set(key, this.recent(key, turns));
+    } catch (err) {
+      this.logger.error(
+        `loading the chat with ${chat.peerJid} failed: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  // The chat's latest turns. The model's context has to open with the
+  // person's message, not a reply.
   private recent(key: string, turns = this.history.get(key) ?? []) {
-    const since = Date.now() - HISTORY_WINDOW_MS;
-    const recent = turns.filter((turn) => turn.at >= since).slice(-MAX_HISTORY);
+    const recent = turns.slice(-MAX_HISTORY);
     while (recent[0]?.role === 'assistant') recent.shift();
     // The summary goes when the chat does.
     if (!recent.length) this.summaries.delete(key);
     return recent;
   }
 
-  private remember(key: string, turn: Omit<Turn, 'at'>) {
-    const turns = [
-      ...(this.history.get(key) ?? []),
-      { ...turn, at: Date.now() },
-    ];
+  private remember(key: string, turn: Turn) {
+    const turns = [...(this.history.get(key) ?? []), turn];
     // Re-inserting moves the chat to the end, so the Map's first key is
     // always the one idle longest.
     this.history.delete(key);
