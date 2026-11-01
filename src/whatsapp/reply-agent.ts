@@ -37,11 +37,11 @@ const CONFIRMATION_TURNS = 6;
 
 const CONFIRMATION_FUNCTION = 'order_decision';
 
-// The model always sees the last 10 exchanges of a chat word for word.
-export const CHAT_REMEMBER_MESSAGES = 20;
+// The model always sees the last 20 exchanges of a chat word for word.
+export const CHAT_REMEMBER_MESSAGES = 40;
 // A chat this long, the summary and the new message included, gets summed up,
 // keeping the last CHAT_REMEMBER_MESSAGES and the new message word for word.
-export const CHAT_SUMMARY_AT = 30;
+export const CHAT_SUMMARY_AT = 50;
 const CHAT_KEEP_MESSAGES = CHAT_REMEMBER_MESSAGES + 1;
 const SUMMARY_MAX_TOKENS = 600;
 // Room for a dozen messages of the longest replies REPLY_MAX_TOKENS allows.
