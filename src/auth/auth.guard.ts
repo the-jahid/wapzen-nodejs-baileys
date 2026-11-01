@@ -44,7 +44,9 @@ export class ClerkAuthGuard implements CanActivate {
     try {
       clerkId = await this.clerk.verifySessionToken(token);
     } catch (err) {
-      this.logger.warn(`token rejected: ${(err as Error).message}`);
+      this.logger.warn(
+        `token rejected: ${(err as Error).message} on ${req.method} ${req.path} (${req.headers['user-agent'] ?? 'no user agent'})`,
+      );
       throw unauthorized();
     }
 

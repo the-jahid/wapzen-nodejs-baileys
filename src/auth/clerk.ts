@@ -49,8 +49,13 @@ export class ClerkClient {
       nbf?: number;
     };
     const now = Date.now() / 1000;
-    if (typeof claims.exp !== 'number' || claims.exp + LEEWAY_SECONDS < now) {
-      throw new Error('token expired');
+    if (typeof claims.exp !== 'number') throw new Error('token has no expiry');
+    if (claims.exp + LEEWAY_SECONDS < now) {
+      // Says whose token and how stale, so a client that keeps sending old
+      // tokens can be told apart from one-off sleeping-laptop cases.
+      throw new Error(
+        `token expired ${Math.round(now - claims.exp)}s ago (user ${claims.sub ?? 'unknown'})`,
+      );
     }
     if (typeof claims.nbf === 'number' && claims.nbf - LEEWAY_SECONDS > now) {
       throw new Error('token not valid yet');
