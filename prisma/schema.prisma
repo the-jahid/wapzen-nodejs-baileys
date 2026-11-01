@@ -135,6 +135,9 @@ model ChatConversation {
   // E.164 when known; an "@lid" peer may have none.
   peerPhone       String?   @map("peer_phone")
   peerName        String?   @map("peer_name")
+  // The number the thread was on once its phone_numbers row is deleted, so
+  // linking that number again can take the thread back.
+  formerPhoneNumber String? @map("former_phone_number")
   // 'open' | 'closed'
   status          String    @default("open")
   messageCount    Int       @default(0) @map("message_count")

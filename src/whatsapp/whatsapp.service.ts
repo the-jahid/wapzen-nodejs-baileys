@@ -821,6 +821,15 @@ export class WhatsAppService
         lastConnectedAt: new Date(),
       },
     });
+    // A number linked again after it was removed takes back its old threads,
+    // so a contact stays one conversation.
+    if (!row.phoneNumber && phoneNumber) {
+      await this.prisma
+        .$executeRaw`SELECT adopt_chat_conversations(${id})`.catch(
+        (err: Error) =>
+          this.logger.warn(`adopting threads for ${id} failed: ${err.message}`),
+      );
+    }
     this.logger.log(`${id} connected as ${phoneNumber}`);
     if (login) reportLogin(login, 'completed', `linked ${phoneNumber}`);
   }
