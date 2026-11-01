@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { BulkMessagesModule } from './bulk-messages/bulk-messages.module';
 import { ChatAgentsModule } from './chat-agents/chat-agents.module';
 import { ChatConversationsModule } from './chat-conversations/chat-conversations.module';
 import { KnowledgeBasesModule } from './knowledge-bases/knowledge-bases.module';
@@ -22,6 +23,7 @@ import { WhatsAppModule } from './whatsapp/whatsapp.module';
     KnowledgeBasesModule,
     ToolsModule,
     OrdersModule,
+    BulkMessagesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

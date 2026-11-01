@@ -36,6 +36,8 @@ model User {
   knowledgeBases    KnowledgeBase[]
   tools             Tool[]
   orders            Order[]
+  messageTemplates  MessageTemplate[]
+  bulkCampaigns     BulkCampaign[]
 
   @@map("users")
 }
@@ -97,6 +99,7 @@ model PhoneNumber {
   chatAgent     ChatAgent?
   authValues    WhatsAppAuth[]
   conversations ChatConversation[]
+  bulkCampaigns BulkCampaign[]
 
   @@unique([userId, phoneNumber])
   @@index([userId])
@@ -324,4 +327,75 @@ model Order {
   @@index([userId, status])
   @@index([conversationId, createdAt])
   @@map("orders")
+}
+
+// A message the owner saved to reuse in bulk sends. {{column}} placeholders
+// are filled from each recipient's row when it is sent.
+model MessageTemplate {
+  id        String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId    String   @map("user_id")
+  name      String
+  body      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("message_templates")
+}
+
+// One message sent to a list of people from one number, one at a time,
+// interval_seconds apart. The partial unique index in the migration keeps a
+// number to one running send.
+model BulkCampaign {
+  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId          String    @map("user_id")
+  // Null once the number is removed; the send pauses.
+  phoneNumberId   String?   @map("phone_number_id")
+  name            String
+  // The template body; placeholders are filled per recipient when sent.
+  message         String
+  intervalSeconds Int       @default(30) @map("interval_seconds")
+  // 'running' | 'paused' | 'completed' | 'cancelled'
+  status          String    @default("running")
+  totalCount      Int       @map("total_count")
+  sentCount       Int       @default(0) @map("sent_count")
+  failedCount     Int       @default(0) @map("failed_count")
+  // When the next message may go out. The sender claims a send by moving it.
+  nextSendAt      DateTime  @default(now()) @map("next_send_at") @db.Timestamptz
+  // Why the send is stalled or stopped; cleared by the next message sent.
+  lastError       String?   @map("last_error")
+  completedAt     DateTime? @map("completed_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  phoneNumber PhoneNumber?    @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+  recipients  BulkRecipient[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, nextSendAt])
+  @@map("bulk_campaigns")
+}
+
+model BulkRecipient {
+  id         String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  campaignId String    @map("campaign_id")
+  // Order in the uploaded file; sent lowest first.
+  position   Int
+  // E.164
+  phone      String
+  // The row's other columns, keyed by lower-cased header, for placeholders.
+  variables  Json      @default("{}")
+  // 'pending' | 'sending' | 'sent' | 'failed' | 'skipped'
+  status     String    @default("pending")
+  error      String?
+  sentAt     DateTime? @map("sent_at") @db.Timestamptz
+
+  campaign BulkCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, position])
+  @@index([campaignId, status, position])
+  @@map("bulk_recipients")
 }

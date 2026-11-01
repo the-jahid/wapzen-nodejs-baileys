@@ -102,6 +102,12 @@ export class NumberNotConnectedError extends Error {
   }
 }
 
+export class NotOnWhatsAppError extends Error {
+  constructor() {
+    super('this number is not on WhatsApp');
+  }
+}
+
 class PairingRefusedError extends Error {
   constructor(
     readonly code: number,
@@ -361,6 +367,34 @@ export class WhatsAppService
       throw new NumberNotConnectedError();
     }
     await this.sendFrom(sock, jid, text);
+  }
+
+  // Sends a text to a phone number (E.164) that may never have written to
+  // this number, for a bulk send. WhatsApp is asked first whether the number
+  // has an account, so a typo fails here instead of vanishing. Returns the
+  // JID the contact's replies will most likely arrive from: their "@lid" when
+  // WhatsApp gave one, else the phone JID it was sent to.
+  async sendToPhone(phoneNumberId: string, phone: string, text: string) {
+    const sock = this.sockets.get(phoneNumberId);
+    const row = await this.prisma.phoneNumber.findUnique({
+      where: { id: phoneNumberId },
+      select: { status: true },
+    });
+    if (
+      !sock ||
+      row?.status !== 'connected' ||
+      this.logins.has(phoneNumberId)
+    ) {
+      throw new NumberNotConnectedError();
+    }
+    const [found] = (await sock.onWhatsApp(phone.replace(/^\+/, ''))) ?? [];
+    if (!found?.exists) throw new NotOnWhatsAppError();
+    const pnJid = jidNormalizedUser(found.jid);
+    await this.sendFrom(sock, pnJid, text);
+    const lid = await sock.signalRepository.lidMapping
+      .getLIDForPN(pnJid)
+      .catch(() => null);
+    return { pnJid, lidJid: lid ? jidNormalizedUser(lid) : null };
   }
 
   private sendFrom(sock: WASocket, jid: string, text: string) {
