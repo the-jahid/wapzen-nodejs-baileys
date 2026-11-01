@@ -22,8 +22,8 @@ model User {
   blockedAt    DateTime? @map("blocked_at") @db.Timestamptz
   // Lifetime AI replies sent by the account's agents.
   aiReplyCount Int       @default(0) @map("ai_reply_count")
-  // How many replies the account may send: 50 free, raised for a paid plan.
-  aiReplyLimit Int       @default(50) @map("ai_reply_limit")
+  // How many replies the account may send: 100 free, raised for a paid plan.
+  aiReplyLimit Int       @default(100) @map("ai_reply_limit")
   // The last order number handed out, so a deleted order's number is never
   // reused. The first order is #1001.
   lastOrderNumber Int    @default(1000) @map("last_order_number")
