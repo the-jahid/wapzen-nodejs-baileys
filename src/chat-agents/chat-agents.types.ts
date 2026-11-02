@@ -10,7 +10,7 @@ import { cleanText } from '../orders/orders.types';
 // the contract, but this model takes none, so it no longer changes a reply.
 export const DEFAULT_STATUS = 'inactive';
 export const DEFAULT_PROVIDER = 'openai';
-export const DEFAULT_MODEL = 'gpt-5-nano';
+export const DEFAULT_MODEL = 'gpt-6-luna';
 export const DEFAULT_TEMPERATURE = 0.3;
 export const DEFAULT_SYSTEM_PROMPT =
   'You are a helpful, friendly WhatsApp chat assistant.';

@@ -51,9 +51,9 @@ model ChatAgent {
   phoneNumberId String?  @unique @map("phone_number_id")
   // 'active' | 'inactive'; an active agent must have a phone number.
   status        String   @default("inactive")
-  // Chat agents are locked to GPT-5 nano.
+  // Chat agents are locked to GPT-6 Luna.
   modelProvider String   @default("openai") @map("model_provider")
-  modelName     String   @default("gpt-5-nano") @map("model_name")
+  modelName     String   @default("gpt-6-luna") @map("model_name")
   // 0.1 – 1.0
   temperature   Float    @default(0.3) @map("model_temperature")
   systemPrompt  String   @default("You are a helpful, friendly WhatsApp chat assistant.") @map("prompt_system_prompt")

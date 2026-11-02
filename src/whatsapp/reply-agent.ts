@@ -18,11 +18,10 @@ import type { ChatToolbox } from '../tools/chat-toolbox';
 // a short prompt, and a reply that runs out has no text, so this is a safety
 // limit, not a length limit: chatReplyStyle keeps replies short.
 const REPLY_MAX_TOKENS = 6000;
-// Replies reason at low effort. Measured 2026-11-01 on a shop prompt: medium
-// took 2.6–10.4s a call (2,304 reasoning tokens to answer "-"), and a reply can
-// chain several calls; low took 1.8–2.5s and still caught that the shop was
-// closed, which minimal (about 1.2s) missed.
-const REPLY_EFFORT = 'low';
+// gpt-6-luna takes function tools on chat completions only with reasoning off
+// ("none"; it also refuses "minimal"), and every call here can carry tools, so
+// no call reasons. Measured 2026-11-02: a short reply took 1.2–2.4s.
+const REPLY_EFFORT = 'none';
 // One model call that takes longer than this is abandoned (and retried once),
 // so a stuck request can't leave the chat on "typing" for minutes.
 const CALL_TIMEOUT_MS = 20_000;
@@ -126,7 +125,7 @@ const chatAgentTools = createMiddleware({
 function chatModel(
   apiKey: string,
   maxTokens: number,
-  effort: 'minimal' | 'low' | 'medium' = REPLY_EFFORT,
+  effort: 'none' | 'low' | 'medium' = REPLY_EFFORT,
 ) {
   return new ChatOpenAI({
     model: DEFAULT_MODEL,
@@ -141,14 +140,14 @@ function chatModel(
 // Once a chat reaches CHAT_SUMMARY_AT messages, everything but the last
 // CHAT_KEEP_MESSAGES is replaced by one summary message, which the responder
 // keeps and sends back in place of them. Copying facts forward needs no
-// reasoning, so the summary runs at minimal effort.
+// reasoning, so the summary runs with none too.
 export function createReplyAgent(apiKey: string) {
   return createAgent({
     model: chatModel(apiKey, REPLY_MAX_TOKENS),
     middleware: [
       chatAgentTools,
       summarizationMiddleware({
-        model: chatModel(apiKey, SUMMARY_MAX_TOKENS, 'minimal'),
+        model: chatModel(apiKey, SUMMARY_MAX_TOKENS),
         trigger: { messages: CHAT_SUMMARY_AT },
         keep: { messages: CHAT_KEEP_MESSAGES },
         summaryPrompt: SUMMARY_PROMPT,

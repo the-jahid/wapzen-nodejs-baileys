@@ -166,14 +166,14 @@
             "type": "object"
           },
           "model": {
-            "description": "Conversational model settings. Every chat agent answers with GPT-5 nano; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-5 nano takes none.",
+            "description": "Conversational model settings. Every chat agent answers with GPT-6 Luna; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-6 Luna takes none.",
             "properties": {
               "name": {
-                "default": "gpt-5-nano",
+                "default": "gpt-6-luna",
                 "enum": [
-                  "gpt-5-nano"
+                  "gpt-6-luna"
                 ],
-                "example": "gpt-5-nano",
+                "example": "gpt-6-luna",
                 "type": "string"
               },
               "provider": {
@@ -577,14 +577,14 @@
             "type": "object"
           },
           "model": {
-            "description": "Conversational model settings. Every chat agent answers with GPT-5 nano; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-5 nano takes none.",
+            "description": "Conversational model settings. Every chat agent answers with GPT-6 Luna; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-6 Luna takes none.",
             "properties": {
               "name": {
-                "default": "gpt-5-nano",
+                "default": "gpt-6-luna",
                 "enum": [
-                  "gpt-5-nano"
+                  "gpt-6-luna"
                 ],
-                "example": "gpt-5-nano",
+                "example": "gpt-6-luna",
                 "type": "string"
               },
               "provider": {
@@ -2316,14 +2316,14 @@
             "type": "object"
           },
           "model": {
-            "description": "Conversational model settings. Every chat agent answers with GPT-5 nano; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-5 nano takes none.",
+            "description": "Conversational model settings. Every chat agent answers with GPT-6 Luna; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-6 Luna takes none.",
             "properties": {
               "name": {
-                "default": "gpt-5-nano",
+                "default": "gpt-6-luna",
                 "enum": [
-                  "gpt-5-nano"
+                  "gpt-6-luna"
                 ],
-                "example": "gpt-5-nano",
+                "example": "gpt-6-luna",
                 "type": "string"
               },
               "provider": {
@@ -2757,7 +2757,7 @@
                         ]
                       },
                       "model": {
-                        "name": "gpt-5-nano",
+                        "name": "gpt-6-luna",
                         "provider": "openai",
                         "temperature": 0.3
                       },
@@ -2855,7 +2855,7 @@
                       ]
                     },
                     "model": {
-                      "name": "gpt-5-nano",
+                      "name": "gpt-6-luna",
                       "provider": "openai",
                       "temperature": 0.3
                     },
@@ -3031,7 +3031,7 @@
                       ]
                     },
                     "model": {
-                      "name": "gpt-5-nano",
+                      "name": "gpt-6-luna",
                       "provider": "openai",
                       "temperature": 0.3
                     },
@@ -3135,7 +3135,7 @@
                       ]
                     },
                     "model": {
-                      "name": "gpt-5-nano",
+                      "name": "gpt-6-luna",
                       "provider": "openai",
                       "temperature": 0.3
                     },
