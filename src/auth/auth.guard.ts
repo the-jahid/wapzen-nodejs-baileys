@@ -91,17 +91,24 @@ export class ClerkAuthGuard implements CanActivate {
     const email = primaryEmail(clerkUser);
     if (!email) throw new Error(`clerk user ${clerkId} has no email address`);
     const username = clerkUser.username ?? null;
-    const user = await this.prisma.user
-      .upsert({
+    let user: User;
+    try {
+      user = await this.prisma.user.upsert({
         where: { oauthId: clerkId },
         create: { oauthId: clerkId, email, username },
         update: { email, username },
-      })
-      .catch((err: Error & { code?: string }) => {
-        throw err.code === 'P2002'
-          ? new Error(`${email} already belongs to another account`)
-          : err;
       });
+    } catch (err) {
+      if ((err as { code?: string }).code !== 'P2002') throw err;
+      // A brand-new user's dashboard fires several requests at once, and the
+      // Clerk webhook arrives alongside them, so another one usually created
+      // this row a moment ago. Only a row we still can't find is a real clash.
+      const winner = await this.prisma.user.findUnique({
+        where: { oauthId: clerkId },
+      });
+      if (winner) return winner;
+      throw new Error(`${email} already belongs to another account`);
+    }
     userSignedUp(clerkId, email);
     await createStarterAgent(this.prisma, user.id, email, username);
     return user;
