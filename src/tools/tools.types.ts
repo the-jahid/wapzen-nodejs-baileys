@@ -14,6 +14,9 @@ export const LISTED_TOOL_TYPES = [...TOOL_TYPES, 'order'];
 
 export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 export const PARAMETER_TYPES = ['string', 'number', 'boolean'];
+// How a POST, PUT or PATCH body is encoded. GET and DELETE send no body.
+export const BODY_TYPES = ['json', 'form'] as const;
+export type BodyType = (typeof BODY_TYPES)[number];
 
 export const LIST_PATH = '/v1/tools';
 export const DEFAULT_LIST_LIMIT = 50;
@@ -25,6 +28,11 @@ const MIN_TIMEOUT_SECONDS = 1;
 const MAX_TIMEOUT_SECONDS = 60;
 const MAX_HEADERS = 20;
 const MAX_PARAMETERS = 20;
+const MAX_BODY_FIELDS = 20;
+const MAX_BODY_FIELD_VALUE_LENGTH = 2000;
+// RFC 9110's token: what Node accepts as a header name. Anything else saves
+// fine and then fails every request, so it is refused when saved.
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const MAX_PARAMETER_NAME_LENGTH = 64;
 const MAX_URL_LENGTH = 2000;
 const MAX_MESSAGE_LENGTH = 1000;
@@ -49,6 +57,11 @@ export type ToolParameter = {
 
 export type ToolHeader = { key: string; value: string };
 
+// A value the owner fixes on every request, next to what the model fills in:
+// an API key field, a form id, an action name. It goes where the parameters
+// go, so in the body on POST, PUT and PATCH and in the query string otherwise.
+export type BodyField = { key: string; value: string; type: string };
+
 export type ApiRequestConfig = {
   method: string;
   url: string;
@@ -56,6 +69,8 @@ export type ApiRequestConfig = {
   async: boolean;
   headers: ToolHeader[];
   parameters: ToolParameter[];
+  body_type: BodyType;
+  body_fields: BodyField[];
 };
 
 export type SendTextConfig = { body: string };
@@ -130,6 +145,8 @@ export function resolve(row: Tool): ResolvedTool {
       async: config.async === true,
       headers: (config.headers as ToolHeader[]) ?? [],
       parameters: (config.parameters as ToolParameter[]) ?? [],
+      body_type: config.body_type === 'form' ? 'form' : 'json',
+      body_fields: (config.body_fields as BodyField[]) ?? [],
     };
   } else if (row.type === 'send_text') {
     tool.sendText = { body: (config.body as string) ?? '' };
@@ -277,6 +294,14 @@ export function parseApiRequest(raw: unknown): ApiRequestConfig {
       required: optional(p, 'required', 'boolean') ?? false,
     };
   });
+  const bodyFields = optionalArray(raw, 'body_fields').map((f) => {
+    if (!isObject(f)) throw invalidBody();
+    return {
+      key: optional(f, 'key', 'string') ?? '',
+      value: optional(f, 'value', 'string') ?? '',
+      type: optional(f, 'type', 'string') ?? '',
+    };
+  });
   return {
     method: optional(raw, 'method', 'string') ?? '',
     url: optional(raw, 'url', 'string') ?? '',
@@ -284,6 +309,9 @@ export function parseApiRequest(raw: unknown): ApiRequestConfig {
     async: optional(raw, 'async', 'boolean') ?? false,
     headers,
     parameters,
+    // Checked in apiRequestErrors, so a typo is a field error, not a default.
+    body_type: (optional(raw, 'body_type', 'string') ?? '') as BodyType,
+    body_fields: bodyFields,
   };
 }
 
@@ -388,10 +416,22 @@ export function apiRequestErrors(cfg: ApiRequestConfig): FieldError[] {
     });
   }
   cfg.headers.forEach((h, i) => {
-    if (!h.key.trim()) {
+    const key = h.key.trim();
+    if (!key) {
       errors.push({
         field: `api_request.headers[${i}].key`,
         message: 'header key is required',
+      });
+    } else if (!HEADER_NAME.test(key)) {
+      errors.push({
+        field: `api_request.headers[${i}].key`,
+        message: `header "${key}" is not a valid header name: use letters, digits and dashes, no spaces`,
+      });
+    }
+    if (/[\r\n]/.test(h.value)) {
+      errors.push({
+        field: `api_request.headers[${i}].value`,
+        message: 'a header value must be on one line',
       });
     }
   });
@@ -441,6 +481,77 @@ export function apiRequestErrors(cfg: ApiRequestConfig): FieldError[] {
       });
     }
   });
+
+  const bodyType = cfg.body_type.trim();
+  if (bodyType && !(BODY_TYPES as readonly string[]).includes(bodyType)) {
+    errors.push({
+      field: 'api_request.body_type',
+      message: `body_type must be one of ${BODY_TYPES.join(', ')}`,
+    });
+  }
+  errors.push(...bodyFieldErrors(cfg.body_fields, seen));
+  return errors;
+}
+
+// params holds the parameter names: a fixed value with the same name would
+// leave the model's answer and the owner's fighting over one field.
+function bodyFieldErrors(fields: BodyField[], params: Set<string>) {
+  const errors: FieldError[] = [];
+  if (fields.length > MAX_BODY_FIELDS) {
+    errors.push({
+      field: 'api_request.body_fields',
+      message: `at most ${MAX_BODY_FIELDS} fixed fields are allowed`,
+    });
+  }
+  const seen = new Set<string>();
+  fields.forEach((f, i) => {
+    const field = `api_request.body_fields[${i}]`;
+    const key = f.key.trim();
+    if (!key) {
+      errors.push({ field: `${field}.key`, message: 'field name is required' });
+    } else if (key.length > MAX_PARAMETER_NAME_LENGTH) {
+      errors.push({
+        field: `${field}.key`,
+        message: `field name must be at most ${MAX_PARAMETER_NAME_LENGTH} characters`,
+      });
+    } else if (seen.has(key)) {
+      errors.push({
+        field: `${field}.key`,
+        message: `there are two fixed fields named ${key}`,
+      });
+    } else if (params.has(key)) {
+      errors.push({
+        field: `${field}.key`,
+        message: `${key} is already a parameter the model fills in; remove one of them`,
+      });
+    }
+    seen.add(key);
+
+    const type = f.type.trim() || 'string';
+    const value = f.value.trim();
+    if (!PARAMETER_TYPES.includes(type)) {
+      errors.push({
+        field: `${field}.type`,
+        message: `type must be one of ${PARAMETER_TYPES.join(', ')}`,
+      });
+    } else if (type === 'number' && !Number.isFinite(Number(value || 'x'))) {
+      errors.push({
+        field: `${field}.value`,
+        message: `${key || 'this field'} is a number, so its value must be one`,
+      });
+    } else if (type === 'boolean' && value !== 'true' && value !== 'false') {
+      errors.push({
+        field: `${field}.value`,
+        message: `${key || 'this field'} is a boolean, so its value must be true or false`,
+      });
+    }
+    if (f.value.length > MAX_BODY_FIELD_VALUE_LENGTH) {
+      errors.push({
+        field: `${field}.value`,
+        message: `a value must be at most ${MAX_BODY_FIELD_VALUE_LENGTH} characters`,
+      });
+    }
+  });
   return errors;
 }
 
@@ -462,6 +573,16 @@ export function normalizeApiRequest(cfg: ApiRequestConfig): ApiRequestConfig {
       description: p.description.trim(),
       required: p.required,
     })),
+    body_type: cfg.body_type.trim() === 'form' ? 'form' : 'json',
+    // A string value is kept as typed: a leading space may be meant.
+    body_fields: cfg.body_fields.map((f) => {
+      const type = f.type.trim() || 'string';
+      return {
+        key: f.key.trim(),
+        value: type === 'string' ? f.value : f.value.trim(),
+        type,
+      };
+    }),
   };
 }
 

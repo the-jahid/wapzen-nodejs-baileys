@@ -7,6 +7,7 @@ import {
   DEFAULT_TIMEOUT_SECONDS,
   normalizeMethod,
   type ApiRequestConfig,
+  type BodyField,
   type ResolvedTool,
   type ToolParameter,
 } from './tools.types';
@@ -230,9 +231,10 @@ export function missingRequired(
 }
 
 // Turns the configuration and the model's arguments into one request. On GET
-// and DELETE the arguments become the query string, otherwise the JSON body.
-// Only declared parameters are forwarded: a field the model invents would
-// otherwise be sent to somebody's API as if the tool had asked for it.
+// and DELETE the arguments and fixed fields become the query string,
+// otherwise the body, as JSON or a form. Only declared parameters are
+// forwarded: a field the model invents would otherwise be sent to somebody's
+// API as if the tool had asked for it.
 export function buildRequest(
   cfg: ApiRequestConfig,
   args: Record<string, unknown>,
@@ -248,6 +250,12 @@ export function buildRequest(
     const name = p.name.trim();
     if (name && args[name] != null) declared[name] = args[name];
   }
+  // The owner's values win: saving refuses a clash, so this only matters
+  // for a block stored before that check.
+  for (const f of cfg.body_fields ?? []) {
+    const key = f.key.trim();
+    if (key) declared[key] = fixedValue(f);
+  }
 
   const headers: Record<string, string> = {};
   let body: string | undefined;
@@ -255,6 +263,13 @@ export function buildRequest(
     for (const [name, value] of Object.entries(declared)) {
       url.searchParams.set(name, argumentToString(value));
     }
+  } else if (cfg.body_type === 'form') {
+    const form = new URLSearchParams();
+    for (const [name, value] of Object.entries(declared)) {
+      form.set(name, argumentToString(value));
+    }
+    body = form.toString();
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
   } else {
     body = JSON.stringify(declared);
     headers['Content-Type'] = 'application/json';
@@ -271,6 +286,13 @@ export function buildRequest(
     headers[key] = h.value;
   }
   return { method, url, headers, body };
+}
+
+// A fixed field as its JSON value, so a number goes out as 3, not "3".
+function fixedValue(field: BodyField): unknown {
+  if (field.type === 'number') return Number(field.value);
+  if (field.type === 'boolean') return field.value.trim() === 'true';
+  return field.value;
 }
 
 // One model-supplied argument as text: 3 renders as "3", not "3.0".
