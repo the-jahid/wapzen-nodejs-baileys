@@ -35,6 +35,8 @@ const CONFIRMATION_MAX_TOKENS = 3000;
 // at a time, so the name can be many turns back by the yes: at 6 a live order
 // was refused forever because the name had scrolled out of view.
 const CONFIRMATION_TURNS = 15;
+// How many times that question is asked at once; any yes counts.
+const CONFIRMATION_VOTES = 2;
 
 const CONFIRMATION_FUNCTION = 'order_decision';
 
@@ -67,12 +69,13 @@ const confirmationPrompt = (details: string[]) =>
   [
     "You read a WhatsApp chat between a business's assistant and a customer. Set confirmed to true only if all of these hold:",
     "1. The assistant's last message sets out the whole order and asks whether to place it.",
-    `2. Nothing the order needs is missing: ${[...details, 'whatever the business asks for below'].join(', ')}.`,
+    `2. Nothing the order needs is missing: ${[...details, 'whatever the business asks for below'].join(', ')}. A detail counts as given once the customer gave anything for it anywhere in the chat, even if the last message doesn't repeat it: never judge whether a name is full or an address detailed enough.`,
     "3. The customer's last message is a plain yes to that, in any language.",
     'Customer messages that are a yes: "yes", "ok", "correct, place it", "go ahead", "হ্যাঁ", "ঠিক আছে", "জি".',
     'Customer messages that are not a yes, so confirmed is false: "Ayesha Rahman", "House 5, Road 3, Banani", "no", "no wait, make it one pepperoni instead", "add garlic bread", "how much is it?".',
-    "If the assistant's last message gave an order number, that order is done, so confirmed is false.",
-    'Whatever the answer, set missing to what the order still needs from the customer, in a few words in English (empty when nothing is).',
+    "If the assistant's last message gave an order number, nothing is waiting for a yes, so confirmed is false.",
+    'An order placed earlier in the chat never stops a yes to a later summary from counting: a change to that order or another order needs the same yes.',
+    'Whatever the answer, set missing to the details the order still lacks from the customer, in a few words in English: never the yes itself, and empty when no detail is lacking.',
   ].join('\n');
 
 // What one reply brings to the agent, which itself is shared by every chat.
@@ -223,18 +226,40 @@ export function createConfirmationCheck(apiKey: string) {
       .concat(`Customer: ${text}`)
       .join('\n');
     const business = instructions.trim();
-    const reply = await model.invoke([
+    const messages = [
       new SystemMessage(
         business
           ? `${prompt}\n\nThe business's order instructions:\n${business}`
           : prompt,
       ),
       new HumanMessage(chat),
-    ]);
-    const args = reply.tool_calls?.[0]?.args;
-    return {
-      confirmed: args?.confirmed === true,
-      missing: typeof args?.missing === 'string' ? args.missing.trim() : '',
-    };
+    ];
+    // With no reasoning one answer wobbles: a live yes passed 1 time in 3,
+    // "missing" a name given the message before. A non-yes was never passed
+    // in 48 tries, so two answers at once, either of which may agree, catch
+    // nearly every yes for no extra wait.
+    const answers = await Promise.all(
+      Array.from({ length: CONFIRMATION_VOTES }, () =>
+        model.invoke(messages).then((reply) => {
+          const args = reply.tool_calls?.[0]?.args;
+          return {
+            confirmed: args?.confirmed === true,
+            missing: lacking(args?.missing),
+          };
+        }),
+      ),
+    );
+    return (
+      answers.find((a) => a.confirmed) ??
+      answers.find((a) => a.missing) ??
+      answers[0]
+    );
   };
+}
+
+// The model sometimes names the yes itself, or "none", as what's missing.
+// Neither is a detail to ask the customer for.
+function lacking(missing: unknown) {
+  const text = typeof missing === 'string' ? missing.trim() : '';
+  return /^(none|nothing|n\/a)\.?$|\byes\b|confirm/i.test(text) ? '' : text;
 }

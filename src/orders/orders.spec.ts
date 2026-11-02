@@ -397,7 +397,7 @@ describe('duplicate prevention', () => {
         description: '2 LARGE margherita   pizzas, deliver to Banani',
       }),
     );
-    expect(again).toEqual(first);
+    expect(again).toEqual({ ...first, already_placed: true });
     expect(await prisma.order.count({ where: { userId: a.user.id } })).toBe(1);
   });
 
@@ -410,7 +410,7 @@ describe('duplicate prevention', () => {
       context,
       argsFor({ description: 'One large pepperoni pizza', items }),
     );
-    expect(again).toEqual(first);
+    expect(again).toEqual({ ...first, already_placed: true });
   });
 
   it('keeps one order when two identical calls race', async () => {
@@ -420,7 +420,8 @@ describe('duplicate prevention', () => {
       orders.place(context, argsFor()),
       orders.place(context, argsFor()),
     ]);
-    expect(one).toEqual(two);
+    const [placed, repeat] = 'already_placed' in one ? [two, one] : [one, two];
+    expect(repeat).toEqual({ ...placed, already_placed: true });
     expect(await prisma.order.count({ where: { userId: a.user.id } })).toBe(1);
   });
 

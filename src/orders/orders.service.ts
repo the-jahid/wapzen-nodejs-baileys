@@ -57,6 +57,8 @@ export type OrderResult =
       order_number: number;
       // Set when the call changed the chat's open order instead of placing one.
       updated?: true;
+      // Set when the chat already had this exact order, so nothing changed.
+      already_placed?: true;
     }
   | { success: false; error: string; errors?: FieldError[] };
 
@@ -113,6 +115,14 @@ export class OrdersService {
           order_id: id,
           order_number: orderNumber,
           updated: true,
+        };
+      }
+      if (!created) {
+        return {
+          success: true,
+          order_id: id,
+          order_number: orderNumber,
+          already_placed: true,
         };
       }
       return { success: true, order_id: id, order_number: orderNumber };

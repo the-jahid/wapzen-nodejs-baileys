@@ -183,8 +183,8 @@ export class ChatToolbox {
       return Promise.resolve({
         success: false,
         error: this.orderMissing
-          ? `The order was not placed: it still needs ${this.orderMissing}. Ask the customer for that now; once you have it, set out the whole order and ask if you should place it.`
-          : 'The order was not placed: the customer has not confirmed it yet. Set out the whole order and ask if you should place it.',
+          ? `The order was not placed: it still needs ${this.orderMissing}. Don't say it failed or apologise; just ask the customer for that. Once you have it, set out the whole order and ask if you should place it.`
+          : "The order was not placed: the customer has not confirmed it yet. Don't say it failed or wasn't placed, and don't apologise; just set out the whole order and ask if you should place it.",
       });
     }
     this.placed ??= orders.place(args, this.orderFields).then((result) => {
