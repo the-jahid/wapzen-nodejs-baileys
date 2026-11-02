@@ -10,6 +10,7 @@ import makeWASocket, {
   BinaryNode,
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestWaWebVersion,
   getBinaryNodeChild,
   isJidBroadcast,
@@ -19,9 +20,11 @@ import makeWASocket, {
   jidDecode,
   jidNormalizedUser,
   makeCacheableSignalKeyStore,
+  normalizeMessageContent,
   proto,
   ReachoutTimelockState,
   S_WHATSAPP_NET,
+  toNumber,
   WAMessage,
   WASocket,
   WAVersion,
@@ -32,6 +35,7 @@ import { apiError } from '../chat-agents/chat-agents.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { usePrismaAuthState } from './auth-state';
 import { ChatResponderService } from './chat-responder.service';
+import type { IncomingMedia } from './media';
 import {
   LoginRequest,
   LoginState,
@@ -784,16 +788,19 @@ export class WhatsAppService
     });
   }
 
-  // Hands a just-received private text message to the chat agent on this
-  // number. Groups, status updates, channels and our own messages are skipped.
+  // Hands a just-received private message (text, voice message or photo) to
+  // the chat agent on this number, which decides whether it reads the media.
+  // Groups, status updates, channels and our own messages are skipped.
   private answer(id: string, sock: WASocket, message: WAMessage) {
     const jid = message.key.remoteJid;
     if (!jid || message.key.fromMe) return;
     if (isJidGroup(jid) || isJidBroadcast(jid) || isJidNewsletter(jid)) return;
     const sentAt = Number(message.messageTimestamp ?? 0);
     if (sentAt && Date.now() / 1000 - sentAt > STALE_MESSAGE_SECONDS) return;
-    const text = messageText(message.message)?.trim();
-    if (!text) return;
+    const content = normalizeMessageContent(message.message);
+    const text = messageText(content)?.trim() ?? '';
+    const media = this.incomingMedia(sock, message, content);
+    if (!text && !media) return;
     // An "@lid" chat often carries the sender's number as the alternate JID.
     const pnJid = [jid, message.key.remoteJidAlt].find((j) => isPnUser(j));
     const pnUser = pnJid ? jidDecode(pnJid)?.user : undefined;
@@ -806,6 +813,7 @@ export class WhatsAppService
         peerName: message.pushName ?? undefined,
         messageId: message.key.id ?? undefined,
         text,
+        media,
         send: (reply) => this.sendFrom(sock, jid, reply),
         setTyping: (typing) =>
           sock.sendPresenceUpdate(typing ? 'composing' : 'paused', jid),
@@ -813,6 +821,34 @@ export class WhatsAppService
       .catch((err: Error) =>
         this.logger.error(`answering on ${id} failed: ${err.message}`),
       );
+  }
+
+  // A voice message (recorded or a forwarded audio file) or a photo, to be
+  // downloaded only if the agent reads it. An expired file is asked for again.
+  private incomingMedia(
+    sock: WASocket,
+    message: WAMessage,
+    content: proto.IMessage | undefined,
+  ): IncomingMedia | undefined {
+    const audio = content?.audioMessage;
+    const media = audio ?? content?.imageMessage;
+    if (!media) return undefined;
+    return {
+      kind: audio ? 'voice' : 'image',
+      mimetype: media.mimetype ?? '',
+      bytes: toNumber(media.fileLength),
+      seconds: audio?.seconds ?? 0,
+      download: () =>
+        downloadMediaMessage(
+          message,
+          'buffer',
+          {},
+          {
+            logger: this.baileysLogger,
+            reuploadRequest: sock.updateMediaMessage,
+          },
+        ),
+    };
   }
 
   private async markConnected(id: string, sock: WASocket) {
@@ -1127,15 +1163,10 @@ function removeDevice(sock: WASocket, jid: string) {
 }
 
 // The text of a message, from the kinds a person types: plain, with a link
-// preview or reply, or as a photo/video caption. Disappearing messages wrap
-// the real one.
-function messageText(
-  message: proto.IMessage | null | undefined,
-): string | undefined {
+// preview or reply, or as a photo/video caption. Takes the message already
+// unwrapped (normalizeMessageContent) from disappearing and view-once ones.
+function messageText(message: proto.IMessage | undefined): string | undefined {
   if (!message) return undefined;
-  if (message.ephemeralMessage?.message) {
-    return messageText(message.ephemeralMessage.message);
-  }
   return (
     message.conversation ??
     message.extendedTextMessage?.text ??

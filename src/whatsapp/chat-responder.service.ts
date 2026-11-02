@@ -30,6 +30,14 @@ import {
 import { OrdersService } from '../orders/orders.service';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  imageDataUrl,
+  type IncomingMedia,
+  MAX_IMAGE_BYTES,
+  MAX_VOICE_BYTES,
+  MAX_VOICE_SECONDS,
+  transcribe,
+} from './media';
+import {
   ChatToolbox,
   dateContext,
   zoneForPhone,
@@ -113,10 +121,17 @@ export type IncomingChat = {
   peerName?: string;
   // The WhatsApp message id, so a redelivery isn't saved twice.
   messageId?: string;
+  // What the person typed, or a photo's caption; '' for a bare voice message
+  // or photo.
   text: string;
+  media?: IncomingMedia;
   send: (text: string) => Promise<unknown>;
   setTyping: (typing: boolean) => Promise<unknown>;
 };
+
+// A message as the agent answers it: a voice message turned into its words,
+// a photo the agent reads carried as an image for the model.
+type ReadChat = IncomingChat & { images: string[] };
 
 // Answers a WhatsApp message as the chat agent live on the number it arrived
 // on, through a LangChain agent (reply-agent.ts). The model's context is kept
@@ -187,14 +202,9 @@ export class ChatResponderService {
 
   // Answers a burst as one message from the person, sent from the last one's
   // socket. Each message is still saved on its own, the reply after the last.
-  private async answer(chats: IncomingChat[]) {
-    const last = chats[chats.length - 1];
-    const chat: IncomingChat = {
-      ...last,
-      text: chats.map((c) => c.text).join('\n'),
-    };
+  private async answer(incoming: IncomingChat[]) {
     const agent = await this.prisma.chatAgent.findFirst({
-      where: { phoneNumberId: chat.phoneNumberId, status: 'active' },
+      where: { phoneNumberId: incoming[0].phoneNumberId, status: 'active' },
       include: {
         tools: {
           include: { tool: true },
@@ -210,6 +220,18 @@ export class ChatResponderService {
       },
     });
     if (!agent) return;
+
+    // What the agent doesn't read (a voice message with the switch off, say)
+    // goes unanswered and unsaved, as it did before the switches existed.
+    const chats = (
+      await Promise.all(incoming.map((c) => this.readMedia(agent, c)))
+    ).filter((c): c is ReadChat => !!c);
+    if (!chats.length) return;
+    const chat: ReadChat = {
+      ...chats[chats.length - 1],
+      text: chats.map((c) => c.text).join('\n'),
+      images: chats.flatMap((c) => c.images),
+    };
 
     const reply = await this.replyAs(agent, chat);
     // Saved for the dashboard whether or not a reply went out: the messages
@@ -233,6 +255,59 @@ export class ChatResponderService {
     }
   }
 
+  // A message as the agent reads it, or undefined when it doesn't. A voice
+  // message becomes its words and a photo an image for the model; both are
+  // marked (🎤, 📷) so the conversation record and the agent's later history
+  // say what was sent. A photo that can't be read is answered by its caption.
+  private async readMedia(
+    agent: ReplyingAgent,
+    chat: IncomingChat,
+  ): Promise<ReadChat | undefined> {
+    const { media } = chat;
+    const plain = chat.text ? { ...chat, images: [] } : undefined;
+    if (!media) return plain;
+    const apiKey = this.config.get<string>('OPENAI_API_KEY');
+
+    if (media.kind === 'voice') {
+      if (!agent.voiceMessagesEnabled || !apiKey) return undefined;
+      if (media.seconds > MAX_VOICE_SECONDS || media.bytes > MAX_VOICE_BYTES) {
+        this.logger.warn(
+          `chat agent ${agent.id} skipped a ${media.seconds}s voice message from ${chat.peerJid}`,
+        );
+        return undefined;
+      }
+      try {
+        const words = await transcribe(
+          apiKey,
+          await media.download(),
+          media.mimetype,
+        );
+        return words ? { ...chat, text: `🎤 ${words}`, images: [] } : undefined;
+      } catch (err) {
+        this.logger.error(
+          `chat agent ${agent.id} couldn't transcribe a voice message: ${(err as Error).message}`,
+        );
+        return undefined;
+      }
+    }
+
+    if (!agent.imagesEnabled || media.bytes > MAX_IMAGE_BYTES) return plain;
+    try {
+      const image = imageDataUrl(await media.download(), media.mimetype);
+      if (!image) return plain;
+      return {
+        ...chat,
+        text: chat.text ? `📷 ${chat.text}` : '📷 Photo',
+        images: [image],
+      };
+    } catch (err) {
+      this.logger.error(
+        `chat agent ${agent.id} couldn't download a photo: ${(err as Error).message}`,
+      );
+      return plain;
+    }
+  }
+
   // A message a person sent from the dashboard joins the agent's history, so
   // its next reply knows what was already said.
   rememberSent(
@@ -248,7 +323,7 @@ export class ChatResponderService {
   }
 
   // Answers as the agent and returns what was sent, or '' when nothing was.
-  private async replyAs(agent: ReplyingAgent, chat: IncomingChat) {
+  private async replyAs(agent: ReplyingAgent, chat: ReadChat) {
     const apiKey = this.config.get<string>('OPENAI_API_KEY');
     if (!apiKey) {
       this.logger.warn(
@@ -306,9 +381,19 @@ export class ChatResponderService {
         .filter(Boolean)
         .join('\n\n');
       const summary = this.summaries.get(key);
+      // Photos go to the model only with the message they came in; history
+      // keeps the 📷 line, not the image.
       const incoming = new HumanMessage({
         id: randomUUID(),
-        content: chat.text,
+        content: chat.images.length
+          ? [
+              { type: 'text', text: chat.text },
+              ...chat.images.map((url) => ({
+                type: 'image_url',
+                image_url: { url },
+              })),
+            ]
+          : chat.text,
       });
       const messages: BaseMessage[] = [
         ...(summary ? [summary] : []),

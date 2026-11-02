@@ -247,6 +247,22 @@
               }
             },
             "type": "object"
+          },
+          "media": {
+            "description": "What the agent does with voice messages and photos people send.",
+            "properties": {
+              "voice_messages_enabled": {
+                "default": false,
+                "description": "Answer voice messages: each is transcribed to text and the agent replies in text. Off: voice messages go unanswered.",
+                "type": "boolean"
+              },
+              "images_enabled": {
+                "default": false,
+                "description": "Read the photos people send and answer about them. Off: a photo is answered by its caption alone.",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
           }
         },
         "required": [
@@ -646,6 +662,22 @@
               "order_instructions": {
                 "description": "How the agent should take orders. Added to its prompt while ordering is on. At most 4000 characters.",
                 "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "media": {
+            "description": "What the agent does with voice messages and photos people send.",
+            "properties": {
+              "voice_messages_enabled": {
+                "default": false,
+                "description": "Answer voice messages: each is transcribed to text and the agent replies in text. Off: voice messages go unanswered.",
+                "type": "boolean"
+              },
+              "images_enabled": {
+                "default": false,
+                "description": "Read the photos people send and answer about them. Off: a photo is answered by its caption alone.",
+                "type": "boolean"
               }
             },
             "type": "object"
@@ -2385,6 +2417,22 @@
               "order_instructions": {
                 "description": "How the agent should take orders. Added to its prompt while ordering is on. At most 4000 characters.",
                 "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "media": {
+            "description": "What the agent does with voice messages and photos people send.",
+            "properties": {
+              "voice_messages_enabled": {
+                "default": false,
+                "description": "Answer voice messages: each is transcribed to text and the agent replies in text. Off: voice messages go unanswered.",
+                "type": "boolean"
+              },
+              "images_enabled": {
+                "default": false,
+                "description": "Read the photos people send and answer about them. Off: a photo is answered by its caption alone.",
+                "type": "boolean"
               }
             },
             "type": "object"

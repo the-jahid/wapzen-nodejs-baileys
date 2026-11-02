@@ -57,6 +57,11 @@ model ChatAgent {
   orderEnabled  Boolean  @default(false) @map("order_enabled")
   // How the owner wants orders taken, added to the prompt while ordering is on.
   orderInstructions String @default("") @map("order_instructions")
+  // Whether the agent answers voice messages (transcribed to text first) and
+  // reads the photos people send. Off: voice messages go unanswered and a
+  // photo is answered by its caption alone, as before these existed.
+  voiceMessagesEnabled Boolean @default(false) @map("voice_messages_enabled")
+  imagesEnabled        Boolean @default(false) @map("images_enabled")
   // AI replies sent in the hour that started at hourlyWindowStartedAt; capped
   // at HOURLY_REPLY_LIMIT (chat-responder.service.ts). Not shown anywhere.
   hourlyReplyCount      Int       @default(0) @map("hourly_reply_count")

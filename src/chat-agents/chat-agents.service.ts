@@ -100,6 +100,8 @@ export class ChatAgentsService {
             (await includesTakeOrder(tx, toolIds)) ||
             (req.order?.order_enabled ?? false),
           orderInstructions: cleanText(req.order?.order_instructions ?? ''),
+          voiceMessagesEnabled: req.media?.voice_messages_enabled ?? false,
+          imagesEnabled: req.media?.images_enabled ?? false,
           knowledgeBases: { create: knowledgeBaseRows(knowledgeBaseIds) },
           tools: { create: attachmentRows(toolIds) },
         },
@@ -166,6 +168,12 @@ export class ChatAgentsService {
       }
       if (req.order?.order_instructions !== undefined) {
         data.orderInstructions = cleanText(req.order.order_instructions);
+      }
+      if (req.media?.voice_messages_enabled !== undefined) {
+        data.voiceMessagesEnabled = req.media.voice_messages_enabled;
+      }
+      if (req.media?.images_enabled !== undefined) {
+        data.imagesEnabled = req.media.images_enabled;
       }
       // An id list replaces the attached set wholesale; leaving it out keeps
       // the set as it is.
