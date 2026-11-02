@@ -75,17 +75,6 @@ const MAX_HISTORY = CHAT_SUMMARY_AT;
 // is forgotten, so memory stays flat however many people write in.
 const MAX_CONVERSATIONS = 5_000;
 
-// Same wording as the dashboard's free limit notice (frontend
-// components/nav/FreeLimitNotice.tsx), plus the plan's price. No apostrophe in the prefilled text: an
-// unescaped one can end the link WhatsApp makes out of the URL.
-const LIMIT_WHATSAPP_URL = `https://wa.me/8801701750469?text=${encodeURIComponent(
-  'Hi, I have reached my free limit on Wapzen and would like to buy a paid plan.',
-)}`;
-const LIMIT_REACHED_MESSAGE =
-  'You have reached your free limit on Wapzen, so your AI agent has stopped replying.\n\n' +
-  'You need a paid plan to keep your agent replying. The plan is $20 per month with unlimited messages.\n\n' +
-  `To buy one, message us on WhatsApp: ${LIMIT_WHATSAPP_URL}`;
-
 type Turn = { role: 'user' | 'assistant'; text: string };
 
 // One chat's messages waiting to be answered together. Only one reply per chat
@@ -120,8 +109,6 @@ export type IncomingChat = {
   text: string;
   send: (text: string) => Promise<unknown>;
   setTyping: (typing: boolean) => Promise<unknown>;
-  // Writes to the number's own WhatsApp, not to the person who messaged it.
-  messageOwner: (text: string) => Promise<unknown>;
 };
 
 // Answers a WhatsApp message as the chat agent live on the number it arrived
@@ -276,7 +263,7 @@ export class ChatResponderService {
     });
     if (!owner) {
       this.logger.log(`user ${agent.userId} has used all their replies`);
-      await this.stopAtLimit(agent, chat);
+      await this.stopAtLimit(agent);
       return '';
     }
 
@@ -367,7 +354,7 @@ export class ChatResponderService {
         `AI replied: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
       );
       if (owner.aiReplyCount >= owner.aiReplyLimit) {
-        await this.stopAtLimit(agent, chat);
+        await this.stopAtLimit(agent);
       }
       return reply;
     } catch (err) {
@@ -476,12 +463,12 @@ export class ChatResponderService {
     }
   }
 
-  // The account is out of replies: every agent it has stops, and the owner is
-  // told how to buy a paid plan. Only the call that actually stopped an agent
-  // sends the message, so the owner hears it once however many people write
-  // in. A stopped agent can't go live again until ai_reply_limit is raised
-  // (see allowedStatus in chat-agents.service.ts).
-  private async stopAtLimit(agent: ReplyingAgent, chat: IncomingChat) {
+  // The account is out of replies: every agent it has stops. The owner learns
+  // why from the paid plan card on the dashboard's chat agent page (it reads
+  // reply_limit_reached), not from a WhatsApp message. A stopped agent can't
+  // go live again until ai_reply_limit is raised (see allowedStatus in
+  // chat-agents.service.ts).
+  private async stopAtLimit(agent: ReplyingAgent) {
     try {
       const { count } = await this.prisma.chatAgent.updateMany({
         where: { userId: agent.userId, status: 'active' },
@@ -491,7 +478,6 @@ export class ChatResponderService {
       activity(
         `reply limit reached: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
       );
-      await chat.messageOwner(LIMIT_REACHED_MESSAGE);
     } catch (err) {
       this.logger.error(
         `stopping chat agent ${agent.id} at its limit failed: ${(err as Error).message}`,

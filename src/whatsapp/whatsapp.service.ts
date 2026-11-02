@@ -809,8 +809,6 @@ export class WhatsAppService
         send: (reply) => this.sendFrom(sock, jid, reply),
         setTyping: (typing) =>
           sock.sendPresenceUpdate(typing ? 'composing' : 'paused', jid),
-        messageOwner: (notice) =>
-          sock.sendMessage(jidNormalizedUser(sock.user!.id), { text: notice }),
       })
       .catch((err: Error) =>
         this.logger.error(`answering on ${id} failed: ${err.message}`),
