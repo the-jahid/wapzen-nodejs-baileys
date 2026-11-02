@@ -54,11 +54,17 @@ const CHAT_REPLY_STYLE =
 // The model fills gaps in a thin prompt with plausible facts (in a live test it
 // gave a delivery time the shop never set, and said it would check stock with
 // no way to). Placed with the style, ahead of what changes, so it caches.
+// The last sentence is for agents with no way to place anything: live, one
+// with only a catalogue search told a buyer it had "reserved" a shirt. It
+// doesn't tell them to refuse (that made agents taking orders through their
+// own prompt turn customers away), only not to claim it is done.
 const CHAT_FACTS_RULE =
   'Only state facts about this business, such as prices, stock, sizes, colours, delivery times, payment, policies and opening hours, ' +
   'when they are in your instructions above, the retrieved knowledge, or a tool result. ' +
   'When you do not have a fact, say plainly that you do not have that information; never guess or give a typical answer. ' +
-  'Never say you will do something later, such as checking stock or calling back, unless one of your tools does it now.';
+  'Never say you will do something later, such as checking stock or calling back, unless one of your tools does it now. ' +
+  'Never say an order, booking, reservation or payment is placed, reserved, registered or confirmed unless a tool returned that it was in this conversation. ' +
+  'Without such a tool, you may note what the customer wants, then say the team will confirm it with them.';
 
 // People often send one thought as several quick messages. Each waits this
 // long for the next before the agent answers them all as one, so two replies

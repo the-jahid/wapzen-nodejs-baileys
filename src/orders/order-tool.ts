@@ -145,6 +145,7 @@ export function orderPrompt(
       '2. When you have the details, show the whole order once and ask if you should place it. Show it only once.',
       `3. The moment the customer agrees in any words or language (yes, ok, correct, place it, হ্যাঁ, ঠিক আছে, জি), your whole response is a ${ORDER_FUNCTION} function call, with no text. Do not summarize again, do not ask again, do not ask for anything else: that is a mistake.`,
       "4. After it returns success, give the order number, like: Your order #1024 is placed. If it reports a problem, ask for the field it names or say the order couldn't be placed right now.",
+      `5. Once an order has a number, it is placed: never show it again for confirmation or ask whether to place it. If the customer changes or adds to it, confirm the change and call ${ORDER_FUNCTION} with the whole updated order. It updates that order and keeps its number (the result says updated), so say: Your order #1024 is updated.`,
       `No order exists until ${ORDER_FUNCTION} returns success, so never say you are placing or have placed an order. Don't call it for questions or for someone who is only browsing.`,
     ].join('\n'),
   ]

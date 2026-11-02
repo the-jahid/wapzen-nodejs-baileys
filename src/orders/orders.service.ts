@@ -24,6 +24,12 @@ import {
 // order: a redelivered message or a model repeating its call.
 const DUPLICATE_WINDOW_MS = 2 * 60_000;
 
+// A chat's order stays open this long while it is still new: another
+// create_order in that chat changes it rather than placing a second one. Live,
+// a "yes" to a summary of an order already placed, or an address added after
+// it, put the same order in twice.
+const OPEN_ORDER_WINDOW_MS = 30 * 60_000;
+
 const withAgent = {
   agent: { select: { agentName: true } },
 } satisfies Prisma.OrderInclude;
@@ -45,7 +51,13 @@ export type OrderContext = {
 
 // What create_order hands back to the model.
 export type OrderResult =
-  | { success: true; order_id: string; order_number: number }
+  | {
+      success: true;
+      order_id: string;
+      order_number: number;
+      // Set when the call changed the chat's open order instead of placing one.
+      updated?: true;
+    }
   | { success: false; error: string; errors?: FieldError[] };
 
 // Orders belong to one account: every query is scoped to the signed-in user, so
@@ -82,7 +94,7 @@ export class OrdersService {
         peerPhone: context.customerPhone,
         peerName: context.peerName,
       });
-      const { id, orderNumber, created } = await this.store(
+      const { id, orderNumber, created, updated } = await this.store(
         context,
         conversationId,
         order,
@@ -91,6 +103,17 @@ export class OrdersService {
         activity(
           `order placed: ${context.ownerEmail} - #${orderNumber} by ${context.agentName}`,
         );
+      }
+      if (updated) {
+        activity(
+          `order updated: ${context.ownerEmail} - #${orderNumber} by ${context.agentName}`,
+        );
+        return {
+          success: true,
+          order_id: id,
+          order_number: orderNumber,
+          updated: true,
+        };
       }
       return { success: true, order_id: id, order_number: orderNumber };
     } catch (err) {
@@ -106,7 +129,9 @@ export class OrdersService {
   }
 
   // The user row is locked first, so two calls at once can't both find no
-  // duplicate, and order numbers can't race.
+  // duplicate, and order numbers can't race. An identical order is the one
+  // already there; a different one changes the chat's open order, if it has
+  // one, and only otherwise is placed.
   private store(
     context: OrderContext,
     conversationId: string,
@@ -133,7 +158,34 @@ export class OrdersService {
           }) === fingerprint(order),
       );
       if (same) {
-        return { id: same.id, orderNumber: same.orderNumber, created: false };
+        return {
+          id: same.id,
+          orderNumber: same.orderNumber,
+          created: false,
+          updated: false,
+        };
+      }
+
+      const open = await tx.order.findFirst({
+        where: {
+          userId,
+          conversationId,
+          status: 'new',
+          createdAt: { gte: new Date(Date.now() - OPEN_ORDER_WINDOW_MS) },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (open) {
+        await tx.order.update({
+          where: { id: open.id },
+          data: { ...order, agentId, updatedAt: new Date() },
+        });
+        return {
+          id: open.id,
+          orderNumber: open.orderNumber,
+          created: false,
+          updated: true,
+        };
       }
 
       const { lastOrderNumber } = await tx.user.update({
@@ -151,7 +203,12 @@ export class OrdersService {
           channel: 'chat',
         },
       });
-      return { id: row.id, orderNumber: row.orderNumber, created: true };
+      return {
+        id: row.id,
+        orderNumber: row.orderNumber,
+        created: true,
+        updated: false,
+      };
     });
   }
 

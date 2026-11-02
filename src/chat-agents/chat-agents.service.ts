@@ -100,7 +100,9 @@ export class ChatAgentsService {
           temperature: req.model?.temperature ?? DEFAULT_TEMPERATURE,
           systemPrompt:
             req.prompt?.system_prompt?.trim() || DEFAULT_SYSTEM_PROMPT,
-          orderEnabled: req.order?.order_enabled ?? false,
+          orderEnabled:
+            (await includesTakeOrder(tx, toolIds)) ||
+            (req.order?.order_enabled ?? false),
           orderInstructions: cleanText(req.order?.order_instructions ?? ''),
           knowledgeBases: { create: knowledgeBaseRows(knowledgeBaseIds) },
           tools: { create: attachmentRows(toolIds) },
@@ -184,6 +186,18 @@ export class ChatAgentsService {
       if (req.tools?.tool_ids !== undefined) {
         const toolIds = await ownedToolIds(tx, userId, req.tools.tool_ids);
         data.tools = { deleteMany: {}, create: attachmentRows(toolIds) };
+        // Attaching Take Order is taking orders. It used to need the toggle as
+        // well, and 8 of 13 owners who attached it missed that: their agents
+        // told customers ordering wasn't available. Wins over an order_enabled
+        // in the same request, which the dashboard sends with every save.
+        const attached = await tx.chatAgentTool.findMany({
+          where: { chatAgentId: id },
+          select: { toolId: true },
+        });
+        const added = toolIds.filter(
+          (toolId) => !attached.some((row) => row.toolId === toolId),
+        );
+        if (await includesTakeOrder(tx, added)) data.orderEnabled = true;
       }
 
       // Always written, so updated_at moves even when only the attachment
@@ -308,6 +322,15 @@ async function ownedToolIds(tx: Tx, userId: string, ids: string[] | undefined) {
     throw apiError(HttpStatus.NOT_FOUND, 'tool not found');
   }
   return wanted;
+}
+
+// Whether these tool ids include the built-in Take Order.
+async function includesTakeOrder(tx: Tx, toolIds: string[]) {
+  if (!toolIds.length) return false;
+  const count = await tx.tool.count({
+    where: { id: { in: toolIds }, type: 'order' },
+  });
+  return count > 0;
 }
 
 // Join rows a millisecond apart, so the attachment order is the order sent.

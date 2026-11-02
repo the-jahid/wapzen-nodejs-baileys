@@ -241,7 +241,7 @@ describe('create_order', () => {
 
     const first = await orders.place(context, argsFor());
     const second = await orders.place(
-      context,
+      contextFor(a.user.id, a.agent.id, a.phone.id),
       argsFor({ description: 'one garlic bread' }),
     );
     const other = await orders.place(
@@ -424,29 +424,53 @@ describe('duplicate prevention', () => {
     expect(await prisma.order.count({ where: { userId: a.user.id } })).toBe(1);
   });
 
-  it('treats a different order, another chat or an old order as new', async () => {
+  it('changes the chat’s open order instead of placing a second one', async () => {
+    const a = await newAccount('amend');
+    const context = contextFor(a.user.id, a.agent.id, a.phone.id);
+    const first = await orders.place(context, argsFor());
+    if (!first.success) throw new Error(first.error);
+
+    // Live: an address given after the order was placed made order #1002.
+    const changed = await orders.place(
+      context,
+      argsFor({ delivery_address: 'Hakah Dunia Restaurant' }),
+    );
+
+    expect(changed).toEqual({ ...first, updated: true });
+    const rows = await prisma.order.findMany({ where: { userId: a.user.id } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].deliveryAddress).toBe('Hakah Dunia Restaurant');
+  });
+
+  it('places a new order in another chat, or once the open one is old or handled', async () => {
     const a = await newAccount('distinct');
     const context = contextFor(a.user.id, a.agent.id, a.phone.id);
     const first = await orders.place(context, argsFor());
     if (!first.success) throw new Error(first.error);
 
-    const different = await orders.place(
-      context,
-      argsFor({ description: 'one garlic bread' }),
-    );
     const otherChat = await orders.place(
       contextFor(a.user.id, a.agent.id, a.phone.id),
       argsFor(),
     );
     await prisma.order.update({
       where: { id: first.order_id },
-      data: { createdAt: new Date(Date.now() - 3 * 60_000) },
+      data: { createdAt: new Date(Date.now() - 31 * 60_000) },
     });
-    const later = await orders.place(context, argsFor());
+    const later = await orders.place(
+      context,
+      argsFor({ description: 'one garlic bread' }),
+    );
+    if (!later.success) throw new Error(later.error);
+    await orders.update(a.user.id, later.order_id, { status: 'confirmed' });
+    const afterHandled = await orders.place(
+      context,
+      argsFor({ description: 'three cokes' }),
+    );
 
-    expect(different).toMatchObject({ order_number: 1002 });
-    expect(otherChat).toMatchObject({ order_number: 1003 });
-    expect(later).toMatchObject({ order_number: 1004 });
+    expect(otherChat).toMatchObject({ order_number: 1002 });
+    expect(later).toMatchObject({ order_number: 1003 });
+    expect(later).not.toHaveProperty('updated');
+    expect(afterHandled).toMatchObject({ order_number: 1004 });
   });
 
   it('lets a cancelled order be placed again', async () => {
@@ -627,6 +651,35 @@ describe('order_enabled', () => {
     expect(attached.order.orders_on).toBe(true);
     expect(attached.tools.tool_ids).toEqual([tool.id]);
   });
+
+  it('turns ordering on when Take Order is attached, and lets it be turned off', async () => {
+    const agents = new ChatAgentsService(prisma as unknown as PrismaService);
+    const { user, agent } = await newAccount('attachon');
+    const tool = await prisma.tool.findFirstOrThrow({
+      where: { userId: user.id, key: 'take_order' },
+    });
+
+    // The dashboard sends the toggle's old value along with the new tool list.
+    const attached = await agents.update(user.id, agent.id, {
+      tools: { tool_ids: [tool.id] },
+      order: { order_enabled: false },
+    });
+    expect(attached.order.orders_on).toBe(true);
+
+    const off = await agents.update(user.id, agent.id, {
+      tools: { tool_ids: [tool.id] },
+      order: { order_enabled: false },
+    });
+    expect(off.order).toMatchObject({ order_enabled: false, orders_on: false });
+
+    // The account's one agent makes room for a new one.
+    await prisma.chatAgent.delete({ where: { id: agent.id } });
+    const created = await agents.create(user.id, {
+      agent: { name: 'With orders' },
+      tools: { tool_ids: [tool.id] },
+    });
+    expect(created.order.orders_on).toBe(true);
+  });
 });
 
 describe('workspace isolation', () => {
@@ -695,21 +748,19 @@ describe('list and export', () => {
 
   beforeAll(async () => {
     account = await newAccount('filters');
-    const context = contextFor(
-      account.user.id,
-      account.agent.id,
-      account.phone.id,
-    );
+    // Each customer in a chat of their own: in one chat they'd be one order.
+    const context = () =>
+      contextFor(account.user.id, account.agent.id, account.phone.id);
     await orders.place(
-      context,
+      context(),
       argsFor({ customer_name: 'Bilal', email: 'B@Example.com' }),
     );
     await orders.place(
-      context,
+      context(),
       argsFor({ customer_name: 'Chandni', phone: '+8801811111111' }),
     );
     const third = await orders.place(
-      context,
+      context(),
       argsFor({ customer_name: 'Dipa' }),
     );
     if (!third.success) throw new Error(third.error);
