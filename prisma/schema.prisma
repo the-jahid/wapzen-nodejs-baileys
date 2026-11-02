@@ -20,11 +20,6 @@ model User {
   username     String?
   // An operator can block an account; setting this back to null unblocks it.
   blockedAt    DateTime? @map("blocked_at") @db.Timestamptz
-  // Lifetime AI replies sent by the account's agents.
-  aiReplyCount Int       @default(0) @map("ai_reply_count")
-  // How many replies the account may send: unlimited for everyone since
-  // 2026-11-02 (the largest int, so the limit checks never fire).
-  aiReplyLimit Int       @default(2147483647) @map("ai_reply_limit")
   // The last order number handed out, so a deleted order's number is never
   // reused. The first order is #1001.
   lastOrderNumber Int    @default(1000) @map("last_order_number")
@@ -58,8 +53,6 @@ model ChatAgent {
   // 0.1 – 1.0
   temperature   Float    @default(0.3) @map("model_temperature")
   systemPrompt  String   @default("You are a helpful, friendly WhatsApp chat assistant.") @map("prompt_system_prompt")
-  // No longer written: the allowance lives on users since migration 00006.
-  aiReplyCount  Int      @default(0) @map("ai_reply_count")
   // Orders are taken only when this is on AND the Take Order tool is attached.
   orderEnabled  Boolean  @default(false) @map("order_enabled")
   // How the owner wants orders taken, added to the prompt while ordering is on.

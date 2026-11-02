@@ -16,8 +16,7 @@ export const DEFAULT_SYSTEM_PROMPT =
   'You are a helpful, friendly WhatsApp chat assistant.';
 
 // Account limit, enforced but never advertised: the dashboard learns about it
-// only once it is reached. The reply allowance is per account, in
-// users.ai_reply_limit.
+// only once it is reached.
 export const MAX_CHAT_AGENTS_PER_USER = 1;
 
 // The prompt is resent with every reply, so its length is capped (Go
@@ -59,12 +58,10 @@ export type ChatAgentResource = {
     order_instructions: string;
     orders_on: boolean;
   };
-  // True once the account has sent every reply it is allowed. Read-only.
-  reply_limit_reached: boolean;
 };
 
 // What a resource needs beyond the row: attached tools and knowledge bases, in
-// the order they were attached, and the owner's reply allowance.
+// the order they were attached.
 export const resourceInclude = {
   knowledgeBases: {
     select: { knowledgeBaseId: true },
@@ -74,14 +71,12 @@ export const resourceInclude = {
     select: { toolId: true, tool: { select: { key: true } } },
     orderBy: [{ createdAt: 'asc' }, { toolId: 'asc' }],
   },
-  user: { select: { aiReplyCount: true, aiReplyLimit: true } },
 } satisfies Prisma.ChatAgentInclude;
 
 export function toResource(
   row: ChatAgent & {
     knowledgeBases: { knowledgeBaseId: string }[];
     tools: { toolId: string; tool: { key: string | null } }[];
-    user: { aiReplyCount: number; aiReplyLimit: number };
   },
 ): ChatAgentResource {
   return {
@@ -110,7 +105,6 @@ export function toResource(
         row.orderEnabled &&
         row.tools.some((t) => t.tool.key === ORDER_TOOL_KEY),
     },
-    reply_limit_reached: row.user.aiReplyCount >= row.user.aiReplyLimit,
   };
 }
 

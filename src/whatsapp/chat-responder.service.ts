@@ -256,23 +256,6 @@ export class ChatResponderService {
       return '';
     }
 
-    // Take one reply from the account's allowance before asking the model, so
-    // messages arriving together can't overshoot it. Handed back below if the
-    // reply never goes out.
-    const [owner] = await this.prisma.user.updateManyAndReturn({
-      where: {
-        id: agent.userId,
-        aiReplyCount: { lt: this.prisma.user.fields.aiReplyLimit },
-      },
-      data: { aiReplyCount: { increment: 1 } },
-      select: { aiReplyCount: true, aiReplyLimit: true },
-    });
-    if (!owner) {
-      this.logger.log(`user ${agent.userId} has used all their replies`);
-      await this.stopAtLimit(agent);
-      return '';
-    }
-
     const key = `${agent.id}|${chat.phoneNumberId}|${chat.peerJid}`;
     let sent = false;
     try {
@@ -362,9 +345,6 @@ export class ChatResponderService {
       activity(
         `AI replied: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
       );
-      if (owner.aiReplyCount >= owner.aiReplyLimit) {
-        await this.stopAtLimit(agent);
-      }
       return reply;
     } catch (err) {
       this.logger.error(
@@ -372,15 +352,7 @@ export class ChatResponderService {
       );
       return '';
     } finally {
-      if (!sent) {
-        await chat.setTyping(false).catch(() => undefined);
-        await this.prisma.user
-          .updateMany({
-            where: { id: agent.userId, aiReplyCount: { gt: 0 } },
-            data: { aiReplyCount: { decrement: 1 } },
-          })
-          .catch(() => undefined);
-      }
+      if (!sent) await chat.setTyping(false).catch(() => undefined);
     }
   }
 
@@ -469,28 +441,6 @@ export class ChatResponderService {
         `chat agent ${agent.id} knowledge lookup failed: ${(err as Error).message}`,
       );
       return '';
-    }
-  }
-
-  // The account is out of replies: every agent it has stops. The owner learns
-  // why from the paid plan card on the dashboard's chat agent page (it reads
-  // reply_limit_reached), not from a WhatsApp message. A stopped agent can't
-  // go live again until ai_reply_limit is raised (see allowedStatus in
-  // chat-agents.service.ts).
-  private async stopAtLimit(agent: ReplyingAgent) {
-    try {
-      const { count } = await this.prisma.chatAgent.updateMany({
-        where: { userId: agent.userId, status: 'active' },
-        data: { status: 'inactive' },
-      });
-      if (count === 0) return;
-      activity(
-        `reply limit reached: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
-      );
-    } catch (err) {
-      this.logger.error(
-        `stopping chat agent ${agent.id} at its limit failed: ${(err as Error).message}`,
-      );
     }
   }
 
