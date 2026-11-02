@@ -31,8 +31,10 @@ const MAX_TOOL_ROUNDS = 3;
 // The answer to the yes-or-no question below is one short function call, but
 // reasoning took up to 1,216 tokens first, and running out reads as a no.
 const CONFIRMATION_MAX_TOKENS = 3000;
-// How much of the chat that question is asked about.
-const CONFIRMATION_TURNS = 6;
+// How much of the chat that question is asked about. Details come one message
+// at a time, so the name can be many turns back by the yes: at 6 a live order
+// was refused forever because the name had scrolled out of view.
+const CONFIRMATION_TURNS = 15;
 
 const CONFIRMATION_FUNCTION = 'order_decision';
 
@@ -70,6 +72,7 @@ const confirmationPrompt = (details: string[]) =>
     'Customer messages that are a yes: "yes", "ok", "correct, place it", "go ahead", "হ্যাঁ", "ঠিক আছে", "জি".',
     'Customer messages that are not a yes, so confirmed is false: "Ayesha Rahman", "House 5, Road 3, Banani", "no", "no wait, make it one pepperoni instead", "add garlic bread", "how much is it?".',
     "If the assistant's last message gave an order number, that order is done, so confirmed is false.",
+    'Whatever the answer, set missing to what the order still needs from the customer, in a few words in English (empty when nothing is).',
   ].join('\n');
 
 // What one reply brings to the agent, which itself is shared by every chat.
@@ -171,6 +174,10 @@ export const isChatSummary = (message: BaseMessage) =>
   message.additional_kwargs?.lc_source === 'summarization' &&
   !FAILED_SUMMARIES.some((failure) => message.text.includes(failure));
 
+// What the confirmation check found: whether the customer agreed, and what the
+// order still lacks, so a refused order can say what to ask for next.
+export type OrderCheck = { confirmed: boolean; missing: string };
+
 // Whether the customer's last message agrees to the order the agent set out.
 // At minimal effort the model often asks for confirmation again instead of
 // placing the order, or places it too early (in a live test it placed 11 in 30,
@@ -187,8 +194,11 @@ export function createConfirmationCheck(apiKey: string) {
           description: 'Records whether the customer confirmed the order.',
           parameters: {
             type: 'object',
-            properties: { confirmed: { type: 'boolean' } },
-            required: ['confirmed'],
+            properties: {
+              missing: { type: 'string' },
+              confirmed: { type: 'boolean' },
+            },
+            required: ['missing', 'confirmed'],
           },
         },
       },
@@ -206,7 +216,7 @@ export function createConfirmationCheck(apiKey: string) {
     text: string,
     instructions: string,
     details: string[],
-  ) => {
+  ): Promise<OrderCheck> => {
     const prompt = confirmationPrompt(details);
     const chat = [...turns.slice(-CONFIRMATION_TURNS)]
       .map((t) => `${t.role === 'user' ? 'Customer' : 'Assistant'}: ${t.text}`)
@@ -221,6 +231,10 @@ export function createConfirmationCheck(apiKey: string) {
       ),
       new HumanMessage(chat),
     ]);
-    return reply.tool_calls?.[0]?.args?.confirmed === true;
+    const args = reply.tool_calls?.[0]?.args;
+    return {
+      confirmed: args?.confirmed === true,
+      missing: typeof args?.missing === 'string' ? args.missing.trim() : '',
+    };
   };
 }

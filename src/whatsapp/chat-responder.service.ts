@@ -287,7 +287,7 @@ export class ChatResponderService {
       await this.loadHistory(key, chat);
       // Both ask a different service before the reply can start, so they run
       // together.
-      const [knowledge, confirmed] = await Promise.all([
+      const [knowledge, check] = await Promise.all([
         this.knowledgeFor(agent, key, chat.text),
         !!toolbox?.takesOrders &&
           this.orderConfirmed(
@@ -334,11 +334,14 @@ export class ChatResponderService {
         ),
         incoming,
       ];
-      if (confirmed) toolbox!.confirmOrder();
+      if (check) {
+        if (check.confirmed) toolbox!.confirmOrder();
+        toolbox!.noteMissing(check.missing);
+      }
       const generated = await this.generate(key, apiKey, messages, incoming, {
         prompt,
         toolbox,
-        requiredTool: confirmed ? ORDER_FUNCTION : undefined,
+        requiredTool: check && check.confirmed ? ORDER_FUNCTION : undefined,
       });
       // An order must never be placed in silence.
       const orderNumber = await toolbox?.placedOrderNumber();
@@ -427,7 +430,7 @@ export class ChatResponderService {
     fields: OrderField[],
   ) {
     const turns = this.recent(key);
-    if (!turns.some((turn) => turn.role === 'assistant')) return false;
+    if (!turns.some((turn) => turn.role === 'assistant')) return undefined;
     this.confirmationCheck ??= createConfirmationCheck(apiKey);
     try {
       return await this.confirmationCheck(
@@ -438,7 +441,7 @@ export class ChatResponderService {
       );
     } catch (err) {
       this.logger.warn(`order check failed: ${(err as Error).message}`);
-      return false;
+      return undefined;
     }
   }
 

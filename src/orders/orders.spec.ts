@@ -564,6 +564,20 @@ describe('order_enabled', () => {
     expect(await box.placedOrderNumber()).toBeUndefined();
   });
 
+  it('says what an unconfirmed order still needs, when the check knows', async () => {
+    const tool = await takeOrderRow('missing');
+    const box = ChatToolbox.for([tool], 'agent', send, {
+      phoneKnown: true,
+      place: jest.fn(),
+    })!;
+    box.noteMissing('the house number');
+
+    const result = await box.run(ORDER_FUNCTION, argsFor());
+
+    expect(result).toContain('"success":false');
+    expect(result).toContain('it still needs the house number');
+  });
+
   it('places one order per reply, but lets a failed call be retried', async () => {
     const tool = await takeOrderRow('onereply');
     const placeOnce = jest

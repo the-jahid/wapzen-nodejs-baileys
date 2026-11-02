@@ -42,6 +42,8 @@ export class ChatToolbox {
   private placed?: Promise<OrderResult>;
   // Set once the customer has agreed to the order this message.
   private orderConfirmed = false;
+  // What the order still lacks, as the confirmation check saw it.
+  private orderMissing = '';
 
   private constructor(
     private readonly label: string,
@@ -156,6 +158,13 @@ export class ChatToolbox {
     this.orderConfirmed = true;
   }
 
+  // A refused order names this, so the model asks for it instead of asking
+  // the customer to confirm again (live, it asked "shall I place it?" after
+  // three yeses while the house number was what was missing).
+  noteMissing(missing: string) {
+    this.orderMissing = missing;
+  }
+
   // The number of the order placed in this reply, if one was.
   async placedOrderNumber() {
     const result = await this.placed;
@@ -173,8 +182,9 @@ export class ChatToolbox {
     if (!this.orderConfirmed) {
       return Promise.resolve({
         success: false,
-        error:
-          'The order was not placed: the customer has not confirmed it yet. Set out the whole order and ask if you should place it.',
+        error: this.orderMissing
+          ? `The order was not placed: it still needs ${this.orderMissing}. Ask the customer for that now; once you have it, set out the whole order and ask if you should place it.`
+          : 'The order was not placed: the customer has not confirmed it yet. Set out the whole order and ask if you should place it.',
       });
     }
     this.placed ??= orders.place(args, this.orderFields).then((result) => {
