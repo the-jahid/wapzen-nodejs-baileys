@@ -7,6 +7,7 @@ import {
   type BaseMessage,
 } from '@langchain/core/messages';
 import { activity } from '../activity/activity';
+import { HOURLY_REPLY_LIMIT } from '../chat-agents/chat-agents.types';
 import {
   latestChatMessages,
   recordChatTurn,
@@ -255,6 +256,7 @@ export class ChatResponderService {
       );
       return '';
     }
+    if (!(await this.claimReply(agent))) return '';
 
     const key = `${agent.id}|${chat.phoneNumberId}|${chat.peerJid}`;
     let sent = false;
@@ -352,8 +354,58 @@ export class ChatResponderService {
       );
       return '';
     } finally {
-      if (!sent) await chat.setTyping(false).catch(() => undefined);
+      if (!sent) {
+        await chat.setTyping(false).catch(() => undefined);
+        await this.releaseReply(agent);
+      }
     }
+  }
+
+  // Takes one reply from the agent's hour before asking the model, so replies
+  // running together (several chats, several instances) can't overshoot it. A
+  // window older than an hour starts over at this reply. False at the limit.
+  private async claimReply(agent: ReplyingAgent) {
+    try {
+      const [claimed] = await this.prisma.$queryRaw<{ count: number }[]>`
+        UPDATE chat_agents SET
+          hourly_reply_count = CASE
+            WHEN hourly_window_started_at > now() - interval '1 hour'
+            THEN hourly_reply_count + 1 ELSE 1 END,
+          hourly_window_started_at = CASE
+            WHEN hourly_window_started_at > now() - interval '1 hour'
+            THEN hourly_window_started_at ELSE now() END
+        WHERE id = ${agent.id}
+          AND (hourly_window_started_at IS NULL
+            OR hourly_window_started_at <= now() - interval '1 hour'
+            OR hourly_reply_count < ${HOURLY_REPLY_LIMIT})
+        RETURNING hourly_reply_count AS count`;
+      if (!claimed) {
+        this.logger.log(`chat agent ${agent.id} is at its hourly reply limit`);
+        return false;
+      }
+      if (claimed.count === HOURLY_REPLY_LIMIT) {
+        activity(
+          `hourly reply limit reached: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
+        );
+      }
+      return true;
+    } catch (err) {
+      // A failed count mustn't silence the agent.
+      this.logger.error(
+        `counting chat agent ${agent.id}'s reply failed: ${(err as Error).message}`,
+      );
+      return true;
+    }
+  }
+
+  // Hands back a reply claimed for a message that got no answer.
+  private async releaseReply(agent: ReplyingAgent) {
+    await this.prisma.chatAgent
+      .updateMany({
+        where: { id: agent.id, hourlyReplyCount: { gt: 0 } },
+        data: { hourlyReplyCount: { decrement: 1 } },
+      })
+      .catch(() => undefined);
   }
 
   // What create_order does in this chat, when the owner has ordering on. An

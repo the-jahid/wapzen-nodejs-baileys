@@ -19,6 +19,14 @@ export const DEFAULT_SYSTEM_PROMPT =
 // only once it is reached.
 export const MAX_CHAT_AGENTS_PER_USER = 1;
 
+// Each agent answers at most this many messages an hour. The hour starts with
+// the first reply once the previous one is over; at the limit the agent stays
+// quiet (messages are still saved) and answers again when the hour is up. Its
+// status isn't touched, so nothing has to switch it back on. The dashboard
+// only hears of it while it is reached (hourly_limit_resets_at).
+export const HOURLY_REPLY_LIMIT = 100;
+const HOUR_MS = 60 * 60 * 1000;
+
 // The prompt is resent with every reply, so its length is capped (Go
 // MaxSystemPromptChars). Counted in code points after trimming, as stored.
 export const MAX_SYSTEM_PROMPT_CHARS = 8000;
@@ -58,6 +66,9 @@ export type ChatAgentResource = {
     order_instructions: string;
     orders_on: boolean;
   };
+  // Read-only. Only present while the agent has sent HOURLY_REPLY_LIMIT
+  // replies this hour: when it starts answering again.
+  hourly_limit_resets_at?: string;
 };
 
 // What a resource needs beyond the row: attached tools and knowledge bases, in
@@ -105,7 +116,15 @@ export function toResource(
         row.orderEnabled &&
         row.tools.some((t) => t.tool.key === ORDER_TOOL_KEY),
     },
+    ...hourlyLimit(row),
   };
+}
+
+function hourlyLimit(row: ChatAgent) {
+  if (row.hourlyReplyCount < HOURLY_REPLY_LIMIT) return {};
+  const resetsAt = (row.hourlyWindowStartedAt?.getTime() ?? 0) + HOUR_MS;
+  if (resetsAt <= Date.now()) return {};
+  return { hourly_limit_resets_at: new Date(resetsAt).toISOString() };
 }
 
 // An error in the { success, message } envelope the dashboard reads. code is

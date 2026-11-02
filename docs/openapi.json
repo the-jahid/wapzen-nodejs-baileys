@@ -147,6 +147,12 @@
             "format": "date-time",
             "type": "string"
           },
+          "hourly_limit_resets_at": {
+            "description": "Read-only. Present only while the agent has sent its 100 AI replies for the current hour; it answers again from this time. Absent otherwise.",
+            "example": "2026-11-03T10:20:00Z",
+            "format": "date-time",
+            "type": "string"
+          },
           "id": {
             "example": "chat_agent_12345",
             "type": "string"
