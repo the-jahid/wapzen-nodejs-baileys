@@ -26,8 +26,6 @@ import {
   ORDER_FUNCTION,
   requiredDetails,
   type OrderField,
-  ORDERS_OFF_PROMPT,
-  orderPrompt,
 } from '../orders/order-tool';
 import { OrdersService } from '../orders/orders.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -53,29 +51,6 @@ import {
   isChatSummary,
   type ReplyContext,
 } from './reply-agent';
-
-// Follows every agent's own prompt (same wording as the Go server). Reply time
-// is almost all the model writing, so a WhatsApp answer defaults to texting
-// length; the agent's prompt can still ask for more.
-const CHAT_REPLY_STYLE =
-  'You are replying in a WhatsApp chat. Write the way a person texts: ' +
-  'usually one to three short sentences, about 60 words at most, with no headings or long lists. ' +
-  'Give a longer answer only when the person asks for detail or your instructions above call for it.';
-
-// The model fills gaps in a thin prompt with plausible facts (in a live test it
-// gave a delivery time the shop never set, and said it would check stock with
-// no way to). Placed with the style, ahead of what changes, so it caches.
-// The last sentence is for agents with no way to place anything: live, one
-// with only a catalogue search told a buyer it had "reserved" a shirt. It
-// doesn't tell them to refuse (that made agents taking orders through their
-// own prompt turn customers away), only not to claim it is done.
-const CHAT_FACTS_RULE =
-  'Only state facts about this business, such as prices, stock, sizes, colours, delivery times, payment, policies and opening hours, ' +
-  'when they are in your instructions above, the retrieved knowledge, or a tool result. ' +
-  'When you do not have a fact, say plainly that you do not have that information; never guess or give a typical answer. ' +
-  'Never say you will do something later, such as checking stock or calling back, unless one of your tools does it now. ' +
-  'Never say an order, booking, reservation or payment is placed, reserved, registered or confirmed unless a tool returned that it was in this conversation. ' +
-  'Without such a tool, you may note what the customer wants, then say the team will confirm it with them.';
 
 // People often send one thought as several quick messages. Each waits this
 // long for the next before the agent answers them all as one, so two replies
@@ -446,23 +421,14 @@ export class ChatResponderService {
             toolbox.orderFields,
           ),
       ]);
-      // OpenAI caches the longest prefix it has seen before, so the part that
-      // stays the same between replies goes first. The date and the passages
-      // change; in front they would make every reply a cache miss.
+      // What the owner set up: the agent's prompt, their order instructions
+      // with order taking on, and passages from attached knowledge bases. The
+      // one line added for every agent is the date and time, in the zone of
+      // the agent's number. The date and the passages change, so they go last
+      // and the rest caches.
       const prompt = [
         agent.systemPrompt.trim(),
-        toolbox?.instructions(),
-        toolbox?.takesOrders
-          ? orderPrompt(
-              agent.orderInstructions,
-              toolbox.phoneKnown,
-              toolbox.orderFields,
-            )
-          : agent.tools.some((t) => t.tool.type === 'order')
-            ? ORDERS_OFF_PROMPT
-            : undefined,
-        CHAT_REPLY_STYLE,
-        CHAT_FACTS_RULE,
+        toolbox?.takesOrders ? agent.orderInstructions.trim() : '',
         dateContext(new Date(), zoneForPhone(agent.phoneNumber?.phoneNumber)),
         knowledge,
       ]

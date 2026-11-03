@@ -41,6 +41,9 @@ const MAX_ITEM_NAME_LENGTH = 200;
 const MAX_ITEM_NOTE_LENGTH = 500;
 const MAX_NOTE_LENGTH = 2000;
 const MAX_CUSTOM_VALUE_LENGTH = 500;
+const MAX_DETAILS = 20;
+const MAX_DETAIL_LABEL_LENGTH = 60;
+const MAX_DETAIL_KEY_LENGTH = 40;
 const MAX_INT = 2_147_483_647;
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -246,6 +249,7 @@ export function parseOrderArgs(
   }
 
   const customFields = parseCustomFields(args, fields, errors);
+  customFields.push(...parseDetails(value('details'), customFields, errors));
 
   // With every field optional, an order could otherwise be nothing at all.
   if (
@@ -296,6 +300,55 @@ function parseCustomFields(
     }
   }
   return values;
+}
+
+// The details the order instructions asked for, kept as the agent labelled
+// them. Their keys come from the labels, so the same detail keeps one key
+// from order to order.
+function parseDetails(
+  raw: unknown,
+  taken: OrderCustomField[],
+  errors: FieldError[],
+): OrderCustomField[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.length > MAX_DETAILS) {
+    errors.push({
+      field: 'details',
+      message: `details must be a list of at most ${MAX_DETAILS}`,
+    });
+    return [];
+  }
+  const keys = new Set(taken.map((field) => field.key));
+  const details: OrderCustomField[] = [];
+  raw.forEach((entry: unknown, i) => {
+    const detail = isObject(entry) ? entry : {};
+    const label = text(detail.label).slice(0, MAX_DETAIL_LABEL_LENGTH);
+    const value = optionalText(detail.value);
+    if (!label || !value) return;
+    if (value.length > MAX_CUSTOM_VALUE_LENGTH) {
+      errors.push({ field: `details[${i}]`, message: `${label} is too long` });
+      return;
+    }
+    const key = keyForLabel(label, keys);
+    keys.add(key);
+    details.push({ key, label, value });
+  });
+  return details;
+}
+
+// Latin labels read well as keys. Any other script, Bangla say, leaves
+// nothing to go on, and the label is kept beside the key.
+function keyForLabel(label: string, taken: Set<string>) {
+  const slug = label
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^[_0-9]+|_+$/g, '')
+    .slice(0, MAX_DETAIL_KEY_LENGTH - 3);
+  const base = slug || 'detail';
+  if (slug && !taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}_${n}`)) n++;
+  return `${base}_${n}`;
 }
 
 function parseItems(raw: unknown, errors: FieldError[]): OrderItem[] {

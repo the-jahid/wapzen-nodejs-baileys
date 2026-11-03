@@ -21,13 +21,25 @@ export const DEFAULT_ORDER_FIELDS: OrderField[] = [
   { key: 'delivery_address', label: 'Delivery address', required: false },
 ];
 
+// What Take Order collects: a note of what the customer wants, and whatever
+// details the owner's order instructions ask for, each under the label the
+// instructions give it. The WhatsApp name and number are added on their own.
+// Nothing is required, so nothing is asked for that the instructions don't ask.
+export const ORDER_NOTE_FIELDS: OrderField[] = [
+  { key: 'description', label: 'Description', required: false },
+  { key: 'details', label: 'Details', required: false },
+];
+
 const NAME_DESCRIPTION = "The customer's name.";
 const PHONE_DESCRIPTION =
   "The customer's phone number, with the country code if they gave one.";
 const KNOWN_PHONE_DESCRIPTION =
   'Only if the customer gave a different number: their WhatsApp number is used otherwise.';
 
-const BUILT_IN_KEYS = new Set(DEFAULT_ORDER_FIELDS.map((field) => field.key));
+const BUILT_IN_KEYS = new Set([
+  ...DEFAULT_ORDER_FIELDS.map((field) => field.key),
+  'details',
+]);
 
 export function isBuiltInField(key: string) {
   return BUILT_IN_KEYS.has(key);
@@ -65,6 +77,21 @@ function fieldSchema(field: OrderField, phoneKnown: boolean) {
             note: { type: 'string' },
           },
           required: ['name'],
+        },
+      };
+    case 'details':
+      return {
+        type: 'array',
+        description:
+          'Each detail the order instructions ask for, such as the name, phone or address, ' +
+          'labelled the way the instructions name it. Leave out what they do not ask for.',
+        items: {
+          type: 'object',
+          properties: {
+            label: { type: 'string' },
+            value: { type: 'string' },
+          },
+          required: ['label', 'value'],
         },
       };
     case 'delivery_address':

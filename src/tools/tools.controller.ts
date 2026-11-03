@@ -7,7 +7,6 @@ import {
   Param,
   Patch,
   Post,
-  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -25,7 +24,6 @@ import {
   MAX_LIST_LIMIT,
   parseApiRequest,
   parseInput,
-  parseOrderFields,
   systemTool,
   validateCreate,
   validateUpdate,
@@ -135,17 +133,6 @@ export class ToolsController {
     if (errors.length) throw validationFailed(errors);
     const data = await this.tools.update(user.id, id, current.type, input);
     return envelope('Tool updated successfully', data);
-  }
-
-  @Put(':tool_id/order-fields')
-  async setOrderFields(
-    @CurrentUser() user: User,
-    @Param('tool_id') id: string,
-    @Body() body: unknown,
-  ) {
-    const fields = parseOrderFields(body);
-    const data = await this.tools.setOrderFields(user.id, id.trim(), fields);
-    return envelope('Order fields saved successfully', data);
   }
 
   @Delete(':tool_id')
