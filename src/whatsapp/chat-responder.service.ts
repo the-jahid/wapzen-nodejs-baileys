@@ -203,22 +203,29 @@ export class ChatResponderService {
   // Answers a burst as one message from the person, sent from the last one's
   // socket. Each message is still saved on its own, the reply after the last.
   private async answer(incoming: IncomingChat[]) {
-    const agent = await this.prisma.chatAgent.findFirst({
-      where: { phoneNumberId: incoming[0].phoneNumberId, status: 'active' },
-      include: {
-        tools: {
-          include: { tool: true },
-          orderBy: [{ createdAt: 'asc' }, { toolId: 'asc' }],
-        },
-        knowledgeBases: {
-          select: {
-            knowledgeBase: { select: { pineconeNamespace: true } },
+    const { phoneNumberId, peerJid } = incoming[0];
+    const [agent, aiOff] = await Promise.all([
+      this.prisma.chatAgent.findFirst({
+        where: { phoneNumberId, status: 'active' },
+        include: {
+          tools: {
+            include: { tool: true },
+            orderBy: [{ createdAt: 'asc' }, { toolId: 'asc' }],
           },
+          knowledgeBases: {
+            select: {
+              knowledgeBase: { select: { pineconeNamespace: true } },
+            },
+          },
+          phoneNumber: { select: { phoneNumber: true } },
+          user: { select: { email: true } },
         },
-        phoneNumber: { select: { phoneNumber: true } },
-        user: { select: { email: true } },
-      },
-    });
+      }),
+      // A person switched the AI off for this contact in the dashboard.
+      this.prisma.chatConversation.count({
+        where: { phoneNumberId, peerJid, aiReplyEnabled: false },
+      }),
+    ]);
     if (!agent) return;
 
     // What the agent doesn't read (a voice message with the switch off, say)
@@ -233,7 +240,18 @@ export class ChatResponderService {
       images: chats.flatMap((c) => c.images),
     };
 
-    const reply = await this.replyAs(agent, chat);
+    let reply = '';
+    if (!aiOff) {
+      reply = await this.replyAs(agent, chat);
+    } else {
+      // The agent keeps hearing the chat, so when it's switched back on it
+      // knows what was said meanwhile. A chat not in memory reloads from the
+      // saved messages anyway.
+      const key = `${agent.id}|${phoneNumberId}|${peerJid}`;
+      if (this.history.get(key)?.length) {
+        this.remember(key, { role: 'user', text: chat.text });
+      }
+    }
     // Saved for the dashboard whether or not a reply went out: the messages
     // still arrived. Losing the copy mustn't disturb the reply path.
     for (const [i, message] of chats.entries()) {

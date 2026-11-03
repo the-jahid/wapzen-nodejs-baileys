@@ -297,6 +297,11 @@
       "ChatConversation": {
         "description": "One saved WhatsApp thread between a chat agent and a contact.",
         "properties": {
+          "ai_reply_enabled": {
+            "description": "Whether the chat agent answers this contact. Off: messages are still saved, the agent stays quiet, and a person replies from the dashboard.",
+            "example": true,
+            "type": "boolean"
+          },
           "chat_agent_id": {
             "description": "Chat agent that last answered on this thread, if still present.",
             "example": "chat_agent_12345",
@@ -388,7 +393,8 @@
           "status",
           "message_count",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "ai_reply_enabled"
         ],
         "type": "object"
       },
@@ -2441,8 +2447,13 @@
         "type": "object"
       },
       "UpdateChatConversationRequest": {
-        "description": "Change to a saved conversation. Only status may be set.",
+        "description": "Change to a saved conversation: its status, the AI switch, or both. At least one must be supplied.",
         "properties": {
+          "ai_reply_enabled": {
+            "description": "Switches the chat agent on or off for this contact only.",
+            "example": false,
+            "type": "boolean"
+          },
           "status": {
             "description": "New thread state.",
             "enum": [
@@ -2453,9 +2464,6 @@
             "type": "string"
           }
         },
-        "required": [
-          "status"
-        ],
         "type": "object"
       },
       "UpdateKnowledgeBaseRequest": {
@@ -2604,9 +2612,15 @@
             "items": {
               "type": "object",
               "properties": {
-                "key": { "type": "string" },
-                "label": { "type": "string" },
-                "value": { "type": "string" }
+                "key": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
               }
             }
           },

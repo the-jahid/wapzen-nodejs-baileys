@@ -146,6 +146,8 @@ model ChatConversation {
   formerPhoneNumber String? @map("former_phone_number")
   // 'open' | 'closed'
   status          String    @default("open")
+  // Off: the agent stays quiet for this contact and a person answers.
+  aiReplyEnabled  Boolean   @default(true) @map("ai_reply_enabled")
   messageCount    Int       @default(0) @map("message_count")
   // 'user' | 'assistant'
   lastMessageRole String?   @map("last_message_role")

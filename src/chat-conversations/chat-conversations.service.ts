@@ -10,6 +10,7 @@ import {
 import { appendMessage, resolvePeerPhones } from './chat-conversations.store';
 import {
   ConversationFilter,
+  ConversationUpdate,
   toMessageResource,
   toResource,
 } from './chat-conversations.types';
@@ -66,11 +67,11 @@ export class ChatConversationsService {
   }
 
   // Closing is bookkeeping for whoever reads the inbox; it doesn't stop the
-  // agent answering (pausing the agent does that).
-  async updateStatus(userId: string, id: string, status: string) {
+  // agent answering. Switching the AI off does, for this contact only.
+  async update(userId: string, id: string, update: ConversationUpdate) {
     const { count } = await this.prisma.chatConversation.updateMany({
       where: { id, userId },
-      data: { status, updatedAt: new Date() },
+      data: { ...update, updatedAt: new Date() },
     });
     if (count === 0) throw notFound();
     const row = await this.prisma.chatConversation.findUniqueOrThrow({

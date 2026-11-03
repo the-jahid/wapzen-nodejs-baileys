@@ -37,12 +37,19 @@ export type ChatConversationResource = {
   peer_phone: string | null;
   peer_name: string | null;
   status: string;
+  ai_reply_enabled: boolean;
   message_count: number;
   last_message_role: string | null;
   last_message_at: string | null;
   created_at: string;
   updated_at: string;
   messages?: ChatMessageResource[];
+};
+
+// The PATCH body once checked: whichever of the two was sent.
+export type ConversationUpdate = {
+  status?: string;
+  aiReplyEnabled?: boolean;
 };
 
 export function toResource(
@@ -57,6 +64,7 @@ export function toResource(
     peer_phone: row.peerPhone,
     peer_name: row.peerName,
     status: row.status,
+    ai_reply_enabled: row.aiReplyEnabled,
     message_count: row.messageCount,
     last_message_role: row.lastMessageRole,
     last_message_at: row.lastMessageAt?.toISOString() ?? null,
@@ -133,29 +141,50 @@ export function parseListQuery(q: Record<string, string | undefined>) {
   return { page, limit, filter };
 }
 
-// The PATCH body: only status may change, since the messages are what
-// happened.
-export function parseUpdate(body: unknown): string {
+// The PATCH body: status and the AI switch may change, at least one of them;
+// the messages are what happened.
+export function parseUpdate(body: unknown): ConversationUpdate {
   const fields = asObject(body);
-  const unknown = Object.keys(fields).find((key) => key !== 'status');
+  const unknown = Object.keys(fields).find(
+    (key) => key !== 'status' && key !== 'ai_reply_enabled',
+  );
   if (unknown) {
     throw apiError(
       HttpStatus.BAD_REQUEST,
       `Invalid request body: json: unknown field "${unknown}"`,
     );
   }
-  if (fields.status === undefined || fields.status === null) {
-    throw apiError(HttpStatus.BAD_REQUEST, 'status is required');
+  const update: ConversationUpdate = {};
+  if (fields.status !== undefined && fields.status !== null) {
+    const status =
+      typeof fields.status === 'string' ? fields.status.trim() : undefined;
+    if (!status || !STATUSES.includes(status)) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'status must be one of open, closed',
+      );
+    }
+    update.status = status;
   }
-  const status =
-    typeof fields.status === 'string' ? fields.status.trim() : undefined;
-  if (!status || !STATUSES.includes(status)) {
+  if (
+    fields.ai_reply_enabled !== undefined &&
+    fields.ai_reply_enabled !== null
+  ) {
+    if (typeof fields.ai_reply_enabled !== 'boolean') {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        'ai_reply_enabled must be true or false',
+      );
+    }
+    update.aiReplyEnabled = fields.ai_reply_enabled;
+  }
+  if (update.status === undefined && update.aiReplyEnabled === undefined) {
     throw apiError(
       HttpStatus.BAD_REQUEST,
-      'status must be one of open, closed',
+      'status or ai_reply_enabled is required',
     );
   }
-  return status;
+  return update;
 }
 
 // The send-message body: { content }, 1–4096 characters once trimmed.

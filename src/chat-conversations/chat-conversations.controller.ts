@@ -78,7 +78,8 @@ export class ChatConversationsController {
     };
   }
 
-  // Closes or reopens a thread; nothing else about it is editable.
+  // Closes or reopens a thread, or switches the AI off or on for it; nothing
+  // else about it is editable.
   @Patch([
     'v1/chat-conversations/:conversation_id',
     'v1/dashboard/chat-conversations/:conversation_id',
@@ -88,11 +89,10 @@ export class ChatConversationsController {
     @Param('conversation_id') id: string,
     @Body() body: unknown,
   ) {
-    const status = parseUpdate(body);
-    const data = await this.conversations.updateStatus(
+    const data = await this.conversations.update(
       user.id,
       id.trim(),
-      status,
+      parseUpdate(body),
     );
     return {
       success: true,
