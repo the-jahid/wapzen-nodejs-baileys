@@ -102,6 +102,7 @@ export class ChatAgentsService {
           orderInstructions: cleanText(req.order?.order_instructions ?? ''),
           voiceMessagesEnabled: req.media?.voice_messages_enabled ?? false,
           imagesEnabled: req.media?.images_enabled ?? false,
+          handoverEnabled: req.handover?.handover_enabled ?? true,
           knowledgeBases: { create: knowledgeBaseRows(knowledgeBaseIds) },
           tools: { create: attachmentRows(toolIds) },
         },
@@ -174,6 +175,9 @@ export class ChatAgentsService {
       }
       if (req.media?.images_enabled !== undefined) {
         data.imagesEnabled = req.media.images_enabled;
+      }
+      if (req.handover?.handover_enabled !== undefined) {
+        data.handoverEnabled = req.handover.handover_enabled;
       }
       // An id list replaces the attached set wholesale; leaving it out keeps
       // the set as it is.

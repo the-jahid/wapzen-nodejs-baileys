@@ -357,14 +357,15 @@ export class ChatResponderService {
   // A person wrote to the customer from the number's own WhatsApp: the agent
   // stops answering them and the message joins the thread, as one sent from
   // the dashboard would. A customer written to first gets a thread here, so
-  // their reply doesn't go to the agent either.
+  // their reply doesn't go to the agent either. An agent with handover off
+  // keeps answering; the message still joins the thread.
   async personSent(sent: PersonSent) {
     const phone = await this.prisma.phoneNumber.findUnique({
       where: { id: sent.phoneNumberId },
       select: {
         userId: true,
         phoneNumber: true,
-        chatAgent: { select: { id: true } },
+        chatAgent: { select: { id: true, handoverEnabled: true } },
         user: { select: { email: true } },
       },
     });
@@ -390,7 +391,7 @@ export class ChatResponderService {
       peerJid: sent.peerJid,
       aiReplyEnabled: true,
     };
-    if (thread.aiReplyEnabled) {
+    if (thread.aiReplyEnabled && phone.chatAgent?.handoverEnabled !== false) {
       await this.prisma.chatConversation.update({
         where: { id: thread.id },
         data: { aiReplyEnabled: false },

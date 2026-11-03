@@ -263,6 +263,17 @@
               }
             },
             "type": "object"
+          },
+          "handover": {
+            "description": "Human handover: what happens when a person writes to a customer from the phone or the dashboard.",
+            "properties": {
+              "handover_enabled": {
+                "default": true,
+                "description": "A person writing to a customer turns the AI off for that customer. Off: the AI keeps answering them.",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
           }
         },
         "required": [
@@ -688,6 +699,17 @@
               "images_enabled": {
                 "default": false,
                 "description": "Read the photos people send and answer about them. Off: a photo is answered by its caption alone.",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "handover": {
+            "description": "Human handover: what happens when a person writes to a customer from the phone or the dashboard.",
+            "properties": {
+              "handover_enabled": {
+                "default": true,
+                "description": "A person writing to a customer turns the AI off for that customer. Off: the AI keeps answering them.",
                 "type": "boolean"
               }
             },
@@ -2443,6 +2465,17 @@
               "images_enabled": {
                 "default": false,
                 "description": "Read the photos people send and answer about them. Off: a photo is answered by its caption alone.",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "handover": {
+            "description": "Human handover: what happens when a person writes to a customer from the phone or the dashboard.",
+            "properties": {
+              "handover_enabled": {
+                "default": true,
+                "description": "A person writing to a customer turns the AI off for that customer. Off: the AI keeps answering them.",
                 "type": "boolean"
               }
             },

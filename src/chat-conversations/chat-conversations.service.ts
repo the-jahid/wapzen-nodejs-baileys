@@ -91,7 +91,8 @@ export class ChatConversationsService {
   // A person taking over from the agent. The message goes out on the
   // thread's number to the JID the contact wrote from, and is saved with the
   // 'assistant' role: to the contact it's the same party speaking. The AI
-  // goes off for this contact.
+  // goes off for this contact, unless the number's agent has handover off.
+  // ai_reply_enabled says which, so the dashboard can show it.
   async send(userId: string, id: string, content: string) {
     const conversation = await this.prisma.chatConversation.findFirst({
       where: { id, userId },
@@ -127,7 +128,12 @@ export class ChatConversationsService {
 
     // A person has taken the chat over, so the agent stops answering this
     // customer until someone switches it back on.
-    if (conversation.aiReplyEnabled) {
+    const agent = await this.prisma.chatAgent.findUnique({
+      where: { phoneNumberId: conversation.phoneNumberId },
+      select: { handoverEnabled: true },
+    });
+    const handOver = agent?.handoverEnabled !== false;
+    if (conversation.aiReplyEnabled && handOver) {
       await this.prisma.chatConversation
         .update({ where: { id }, data: { aiReplyEnabled: false } })
         .catch((err: Error) =>
@@ -148,20 +154,27 @@ export class ChatConversationsService {
 
     // It was sent, which is what matters to the contact; failing to save the
     // copy is logged, not reported as a failed send.
+    const ai_reply_enabled = conversation.aiReplyEnabled && !handOver;
     try {
-      return toMessageResource(
-        await appendMessage(this.prisma, id, 'assistant', content),
-      );
+      return {
+        ...toMessageResource(
+          await appendMessage(this.prisma, id, 'assistant', content),
+        ),
+        ai_reply_enabled,
+      };
     } catch (err) {
       this.logger.error(
         `saving the sent message on ${id} failed: ${(err as Error).message}`,
       );
-      return toMessageResource({
-        seq: conversation.messageCount,
-        role: 'assistant',
-        content,
-        createdAt: new Date(),
-      });
+      return {
+        ...toMessageResource({
+          seq: conversation.messageCount,
+          role: 'assistant',
+          content,
+          createdAt: new Date(),
+        }),
+        ai_reply_enabled,
+      };
     }
   }
 }
