@@ -18,8 +18,10 @@ import { ClerkEvent, WebhooksService } from './webhooks.service';
 // Errors use the Go server's { success, message } envelope rather than Nest's
 // default error body, matching docs/openapi.json. Documented there, so the
 // controller is kept out of the generated docs.
+// Also served without the /api prefix: the Clerk dashboard endpoint is
+// /webhooks/clerk, and every delivery to it 404'd while only /api existed.
 @ApiExcludeController()
-@Controller('api/webhooks')
+@Controller(['api/webhooks', 'webhooks'])
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
 

@@ -39,12 +39,20 @@ export class WebhooksService {
           return null;
         }
         const username = user.username ?? null;
+        // The auth guard usually creates the row (and its starter agent)
+        // first, and Clerk retries/replays old user.created events, so only a
+        // row this event creates counts as a sign-up. Otherwise a replay
+        // would hand back a starter agent the user had deleted.
+        const existed = await this.prisma.user.findUnique({
+          where: { oauthId: user.id },
+          select: { id: true },
+        });
         const row = await this.prisma.user.upsert({
           where: { oauthId: user.id },
           create: { oauthId: user.id, email, username },
           update: { email, username },
         });
-        if (event.type === 'user.created') {
+        if (event.type === 'user.created' && !existed) {
           userSignedUp(user.id, email);
           await createStarterAgent(this.prisma, row.id, email, username);
         }
