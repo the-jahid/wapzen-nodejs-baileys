@@ -90,7 +90,8 @@ export class ChatConversationsService {
 
   // A person taking over from the agent. The message goes out on the
   // thread's number to the JID the contact wrote from, and is saved with the
-  // 'assistant' role: to the contact it's the same party speaking.
+  // 'assistant' role: to the contact it's the same party speaking. The AI
+  // goes off for this contact.
   async send(userId: string, id: string, content: string) {
     const conversation = await this.prisma.chatConversation.findFirst({
       where: { id, userId },
@@ -122,6 +123,18 @@ export class ChatConversationsService {
         `sending on conversation ${id} failed: ${(err as Error).message}`,
       );
       throw apiError(HttpStatus.BAD_GATEWAY, 'WhatsApp refused the message');
+    }
+
+    // A person has taken the chat over, so the agent stops answering this
+    // customer until someone switches it back on.
+    if (conversation.aiReplyEnabled) {
+      await this.prisma.chatConversation
+        .update({ where: { id }, data: { aiReplyEnabled: false } })
+        .catch((err: Error) =>
+          this.logger.error(
+            `switching the AI off on ${id} failed: ${err.message}`,
+          ),
+        );
     }
 
     if (conversation.chatAgentId) {

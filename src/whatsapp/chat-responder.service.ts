@@ -9,6 +9,8 @@ import {
 import { activity } from '../activity/activity';
 import { HOURLY_REPLY_LIMIT } from '../chat-agents/chat-agents.types';
 import {
+  appendMessage,
+  ensureConversation,
   latestChatMessages,
   recordChatTurn,
   resolvePeerPhones,
@@ -127,6 +129,18 @@ export type IncomingChat = {
   media?: IncomingMedia;
   send: (text: string) => Promise<unknown>;
   setTyping: (typing: boolean) => Promise<unknown>;
+};
+
+// A message a person sent from the number's own WhatsApp.
+export type PersonSent = {
+  phoneNumberId: string;
+  // Every JID the customer is known by (their "@lid" and their number).
+  peerJids: string[];
+  // The one to open a thread on when there's none yet.
+  peerJid: string;
+  peerPhone?: string;
+  messageId?: string;
+  text: string;
 };
 
 // A message as the agent answers it: a voice message turned into its words,
@@ -338,6 +352,77 @@ export class ChatResponderService {
       role: 'assistant',
       text,
     });
+  }
+
+  // A person wrote to the customer from the number's own WhatsApp: the agent
+  // stops answering them and the message joins the thread, as one sent from
+  // the dashboard would. A customer written to first gets a thread here, so
+  // their reply doesn't go to the agent either.
+  async personSent(sent: PersonSent) {
+    const phone = await this.prisma.phoneNumber.findUnique({
+      where: { id: sent.phoneNumberId },
+      select: {
+        userId: true,
+        phoneNumber: true,
+        chatAgent: { select: { id: true } },
+        user: { select: { email: true } },
+      },
+    });
+    if (!phone) return;
+    const chatAgentId = phone.chatAgent?.id;
+
+    const found = await this.prisma.chatConversation.findFirst({
+      where: {
+        phoneNumberId: sent.phoneNumberId,
+        peerJid: { in: sent.peerJids },
+      },
+      orderBy: { lastMessageAt: { sort: 'desc', nulls: 'last' } },
+      select: { id: true, peerJid: true, aiReplyEnabled: true },
+    });
+    const thread = found ?? {
+      id: await ensureConversation(this.prisma, {
+        userId: phone.userId,
+        phoneNumberId: sent.phoneNumberId,
+        chatAgentId,
+        peerJid: sent.peerJid,
+        peerPhone: sent.peerPhone,
+      }),
+      peerJid: sent.peerJid,
+      aiReplyEnabled: true,
+    };
+    if (thread.aiReplyEnabled) {
+      await this.prisma.chatConversation.update({
+        where: { id: thread.id },
+        data: { aiReplyEnabled: false },
+      });
+      activity(
+        `AI handed a chat to a person: ${phone.user.email} on ${phone.phoneNumber}`,
+      );
+    }
+
+    // A redelivered message is already on the thread; the unique index says
+    // so, and that's not worth a log line.
+    await appendMessage(
+      this.prisma,
+      thread.id,
+      'assistant',
+      sent.text,
+      sent.messageId,
+    ).catch((err: Error) => {
+      if (!/unique/i.test(err.message)) {
+        this.logger.error(
+          `saving a message sent from the phone failed: ${err.message}`,
+        );
+      }
+    });
+    if (chatAgentId) {
+      this.rememberSent(
+        chatAgentId,
+        sent.phoneNumberId,
+        thread.peerJid,
+        sent.text,
+      );
+    }
   }
 
   // Answers as the agent and returns what was sent, or '' when nothing was.

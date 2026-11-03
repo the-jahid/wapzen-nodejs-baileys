@@ -16,6 +16,7 @@ import makeWASocket, {
   isJidBroadcast,
   isJidGroup,
   isJidNewsletter,
+  isLidUser,
   isPnUser,
   jidDecode,
   jidNormalizedUser,
@@ -648,6 +649,10 @@ export class WhatsAppService
       // number that is most of the traffic, and most of the CPU.
       shouldIgnoreJid: (jid) =>
         isJidGroup(jid) || isJidBroadcast(jid) || isJidNewsletter(jid),
+      // What this socket sends isn't reported back as a new message, so a
+      // message "from me" can only be one a person sent from the phone (or
+      // another linked device), which hands that chat over to them.
+      emitOwnEvents: false,
     });
     // Swapped in before the socket connects, so the history sync fills the
     // capped cache, not Baileys' uncapped one.
@@ -790,13 +795,22 @@ export class WhatsAppService
 
   // Hands a just-received private message (text, voice message or photo) to
   // the chat agent on this number, which decides whether it reads the media.
-  // Groups, status updates, channels and our own messages are skipped.
+  // Groups, status updates and channels are skipped. A message from the
+  // account itself was typed by a person on the phone: see personSent.
   private answer(id: string, sock: WASocket, message: WAMessage) {
     const jid = message.key.remoteJid;
-    if (!jid || message.key.fromMe) return;
+    if (!jid) return;
     if (isJidGroup(jid) || isJidBroadcast(jid) || isJidNewsletter(jid)) return;
     const sentAt = Number(message.messageTimestamp ?? 0);
     if (sentAt && Date.now() / 1000 - sentAt > STALE_MESSAGE_SECONDS) return;
+    if (message.key.fromMe) {
+      this.personSent(id, sock, message).catch((err: Error) =>
+        this.logger.error(
+          `handing a chat over on ${id} failed: ${err.message}`,
+        ),
+      );
+      return;
+    }
     const content = normalizeMessageContent(message.message);
     const text = messageText(content)?.trim() ?? '';
     const media = this.incomingMedia(sock, message, content);
@@ -821,6 +835,44 @@ export class WhatsAppService
       .catch((err: Error) =>
         this.logger.error(`answering on ${id} failed: ${err.message}`),
       );
+  }
+
+  // A person wrote to a customer from the number's own WhatsApp, so the agent
+  // stops answering that customer (the dashboard switch turns it back on).
+  // Notes to self, reactions, edits and deletions don't count.
+  private async personSent(id: string, sock: WASocket, message: WAMessage) {
+    const content = normalizeMessageContent(message.message);
+    const text = messageText(content)?.trim() || mediaLabel(content);
+    if (!text) return;
+
+    const own = [sock.user?.id, sock.user?.lid]
+      .filter((j): j is string => !!j)
+      .map(jidNormalizedUser);
+    const jids = [message.key.remoteJid, message.key.remoteJidAlt]
+      .filter((j): j is string => !!j)
+      .map(jidNormalizedUser);
+    if (jids.some((j) => own.includes(j))) return;
+    // The customer's thread may be keyed on their "@lid" or on their number,
+    // whichever their first message came from, so both are looked for.
+    const mapping = sock.signalRepository.lidMapping;
+    for (const jid of [...jids]) {
+      const other = await (
+        isLidUser(jid) ? mapping.getPNForLID(jid) : mapping.getLIDForPN(jid)
+      ).catch(() => null);
+      if (other) jids.push(jidNormalizedUser(other));
+    }
+    const peerJids = [...new Set(jids)];
+    const pnUser = jidDecode(peerJids.find((j) => isPnUser(j)))?.user;
+
+    await this.responder.personSent({
+      phoneNumberId: id,
+      peerJids,
+      // Replies mostly arrive from the "@lid", so a new thread is opened on it.
+      peerJid: peerJids.find((j) => isLidUser(j)) ?? peerJids[0],
+      peerPhone: pnUser ? `+${pnUser}` : undefined,
+      messageId: message.key.id ?? undefined,
+      text,
+    });
   }
 
   // A voice message (recorded or a forwarded audio file) or a photo, to be
@@ -1174,4 +1226,18 @@ function messageText(message: proto.IMessage | undefined): string | undefined {
     message.videoMessage?.caption ??
     undefined
   );
+}
+
+// How a message with no words is shown in the transcript, or undefined for
+// one that isn't a message to the customer (a reaction, an edit, a deletion).
+function mediaLabel(message: proto.IMessage | undefined): string | undefined {
+  if (!message) return undefined;
+  if (message.audioMessage) return '🎤 Voice message';
+  if (message.imageMessage) return '📷 Photo';
+  if (message.videoMessage) return '🎬 Video';
+  if (message.stickerMessage) return 'Sticker';
+  if (message.documentMessage) return '📄 Document';
+  if (message.contactMessage) return 'Contact';
+  if (message.locationMessage) return '📍 Location';
+  return undefined;
 }
