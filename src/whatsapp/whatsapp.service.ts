@@ -651,7 +651,7 @@ export class WhatsAppService
         isJidGroup(jid) || isJidBroadcast(jid) || isJidNewsletter(jid),
       // What this socket sends isn't reported back as a new message, so a
       // message "from me" can only be one a person sent from the phone (or
-      // another linked device), which hands that chat over to them.
+      // another linked device), which is saved on that customer's thread.
       emitOwnEvents: false,
     });
     // Swapped in before the socket connects, so the history sync fills the
@@ -806,7 +806,7 @@ export class WhatsAppService
     if (message.key.fromMe) {
       this.personSent(id, sock, message).catch((err: Error) =>
         this.logger.error(
-          `handing a chat over on ${id} failed: ${err.message}`,
+          `saving a message sent from the phone on ${id} failed: ${err.message}`,
         ),
       );
       return;
@@ -837,9 +837,10 @@ export class WhatsAppService
       );
   }
 
-  // A person wrote to a customer from the number's own WhatsApp, so the agent
-  // stops answering that customer (the dashboard switch turns it back on).
-  // Notes to self, reactions, edits and deletions don't count.
+  // A person wrote to a customer from the number's own WhatsApp: the message
+  // is saved on the customer's thread. The AI keeps answering; only the
+  // dashboard switch turns it off. Notes to self, reactions, edits and
+  // deletions don't count.
   private async personSent(id: string, sock: WASocket, message: WAMessage) {
     const content = normalizeMessageContent(message.message);
     const text = messageText(content)?.trim() || mediaLabel(content);

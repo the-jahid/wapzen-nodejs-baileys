@@ -354,20 +354,14 @@ export class ChatResponderService {
     });
   }
 
-  // A person wrote to the customer from the number's own WhatsApp: the agent
-  // stops answering them and the message joins the thread, as one sent from
-  // the dashboard would. A customer written to first gets a thread here, so
-  // their reply doesn't go to the agent either. An agent with handover off
-  // keeps answering; the message still joins the thread.
+  // A person wrote to the customer from the number's own WhatsApp: the
+  // message joins the thread, as one sent from the dashboard would, so the
+  // agent's next reply knows what was said. The AI stays as it is: only the
+  // conversation's switch turns it off.
   async personSent(sent: PersonSent) {
     const phone = await this.prisma.phoneNumber.findUnique({
       where: { id: sent.phoneNumberId },
-      select: {
-        userId: true,
-        phoneNumber: true,
-        chatAgent: { select: { id: true, handoverEnabled: true } },
-        user: { select: { email: true } },
-      },
+      select: { userId: true, chatAgent: { select: { id: true } } },
     });
     if (!phone) return;
     const chatAgentId = phone.chatAgent?.id;
@@ -378,7 +372,7 @@ export class ChatResponderService {
         peerJid: { in: sent.peerJids },
       },
       orderBy: { lastMessageAt: { sort: 'desc', nulls: 'last' } },
-      select: { id: true, peerJid: true, aiReplyEnabled: true },
+      select: { id: true, peerJid: true },
     });
     const thread = found ?? {
       id: await ensureConversation(this.prisma, {
@@ -389,17 +383,7 @@ export class ChatResponderService {
         peerPhone: sent.peerPhone,
       }),
       peerJid: sent.peerJid,
-      aiReplyEnabled: true,
     };
-    if (thread.aiReplyEnabled && phone.chatAgent?.handoverEnabled !== false) {
-      await this.prisma.chatConversation.update({
-        where: { id: thread.id },
-        data: { aiReplyEnabled: false },
-      });
-      activity(
-        `AI handed a chat to a person: ${phone.user.email} on ${phone.phoneNumber}`,
-      );
-    }
 
     // A redelivered message is already on the thread; the unique index says
     // so, and that's not worth a log line.

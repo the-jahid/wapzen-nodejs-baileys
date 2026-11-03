@@ -88,11 +88,11 @@ export class ChatConversationsService {
     if (count === 0) throw notFound();
   }
 
-  // A person taking over from the agent. The message goes out on the
+  // A person replying from the dashboard. The message goes out on the
   // thread's number to the JID the contact wrote from, and is saved with the
-  // 'assistant' role: to the contact it's the same party speaking. The AI
-  // goes off for this contact, unless the number's agent has handover off.
-  // ai_reply_enabled says which, so the dashboard can show it.
+  // 'assistant' role: to the contact it's the same party speaking. The AI is
+  // left as it is (only the conversation's switch turns it off);
+  // ai_reply_enabled reports it, so the dashboard's switch stays right.
   async send(userId: string, id: string, content: string) {
     const conversation = await this.prisma.chatConversation.findFirst({
       where: { id, userId },
@@ -126,23 +126,6 @@ export class ChatConversationsService {
       throw apiError(HttpStatus.BAD_GATEWAY, 'WhatsApp refused the message');
     }
 
-    // A person has taken the chat over, so the agent stops answering this
-    // customer until someone switches it back on.
-    const agent = await this.prisma.chatAgent.findUnique({
-      where: { phoneNumberId: conversation.phoneNumberId },
-      select: { handoverEnabled: true },
-    });
-    const handOver = agent?.handoverEnabled !== false;
-    if (conversation.aiReplyEnabled && handOver) {
-      await this.prisma.chatConversation
-        .update({ where: { id }, data: { aiReplyEnabled: false } })
-        .catch((err: Error) =>
-          this.logger.error(
-            `switching the AI off on ${id} failed: ${err.message}`,
-          ),
-        );
-    }
-
     if (conversation.chatAgentId) {
       this.responder.rememberSent(
         conversation.chatAgentId,
@@ -154,7 +137,7 @@ export class ChatConversationsService {
 
     // It was sent, which is what matters to the contact; failing to save the
     // copy is logged, not reported as a failed send.
-    const ai_reply_enabled = conversation.aiReplyEnabled && !handOver;
+    const ai_reply_enabled = conversation.aiReplyEnabled;
     try {
       return {
         ...toMessageResource(

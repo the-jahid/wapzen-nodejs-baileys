@@ -49,7 +49,6 @@ export type ChatAgentInput = {
   tools?: { tool_ids?: string[] };
   order?: { order_enabled?: boolean; order_instructions?: string };
   media?: { voice_messages_enabled?: boolean; images_enabled?: boolean };
-  handover?: { handover_enabled?: boolean };
 };
 
 // One chat agent as the API returns it (ChatAgentResource in the contract).
@@ -70,8 +69,6 @@ export type ChatAgentResource = {
   };
   // Whether the agent answers voice messages and reads the photos it's sent.
   media: { voice_messages_enabled: boolean; images_enabled: boolean };
-  // Whether a person writing to a customer turns the AI off for them.
-  handover: { handover_enabled: boolean };
   // Read-only. Only present while the agent has sent HOURLY_REPLY_LIMIT
   // replies this hour: when it starts answering again.
   hourly_limit_resets_at?: string;
@@ -126,7 +123,6 @@ export function toResource(
       voice_messages_enabled: row.voiceMessagesEnabled,
       images_enabled: row.imagesEnabled,
     },
-    handover: { handover_enabled: row.handoverEnabled },
     ...hourlyLimit(row),
   };
 }
@@ -160,6 +156,8 @@ const SECTIONS: Record<
   tools: { tool_ids: 'ids' },
   order: { order_enabled: 'boolean', order_instructions: 'string' },
   media: { voice_messages_enabled: 'boolean', images_enabled: 'boolean' },
+  // Removed setting. Still accepted and ignored, so a dashboard page opened
+  // while it existed can keep saving the agent.
   handover: { handover_enabled: 'boolean' },
 };
 
@@ -235,8 +233,7 @@ export function validateUpdate(req: ChatAgentInput): void {
     req.order?.order_enabled !== undefined ||
     req.order?.order_instructions !== undefined ||
     req.media?.voice_messages_enabled !== undefined ||
-    req.media?.images_enabled !== undefined ||
-    req.handover?.handover_enabled !== undefined;
+    req.media?.images_enabled !== undefined;
   if (!hasChanges) throw badRequest('at least one setting is required');
 
   if (a?.name !== undefined && !a.name.trim()) {

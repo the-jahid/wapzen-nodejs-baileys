@@ -62,8 +62,9 @@ model ChatAgent {
   // photo is answered by its caption alone, as before these existed.
   voiceMessagesEnabled Boolean @default(false) @map("voice_messages_enabled")
   imagesEnabled        Boolean @default(false) @map("images_enabled")
-  // Whether a person writing to a customer, from the phone or the dashboard,
-  // turns the AI off for that customer. Off: the AI keeps answering.
+  // Unused: the human handover switch was removed the day it shipped
+  // (2026-11-03). Kept so instances still running that code don't fail
+  // mid-deploy; safe to drop in a later migration.
   handoverEnabled Boolean @default(true) @map("handover_enabled")
   // AI replies sent in the hour that started at hourlyWindowStartedAt; capped
   // at HOURLY_REPLY_LIMIT (chat-responder.service.ts). Not shown anywhere.
