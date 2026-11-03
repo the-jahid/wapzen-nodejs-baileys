@@ -348,11 +348,6 @@
             },
             "type": "array"
           },
-          "needs_attention": {
-            "description": "Shown red in the dashboard: the AI went off for this contact, or they wrote while it was off. Stays until a person marks it done (PATCH needs_attention false).",
-            "example": false,
-            "type": "boolean"
-          },
           "peer_jid": {
             "description": "The contact's WhatsApp JID.",
             "example": "15557654321@s.whatsapp.net",
@@ -2452,15 +2447,10 @@
         "type": "object"
       },
       "UpdateChatConversationRequest": {
-        "description": "Change to a saved conversation: its status, the AI switch, the needs-attention flag, or several. At least one must be supplied.",
+        "description": "Change to a saved conversation: its status, the AI switch, or both. At least one must be supplied.",
         "properties": {
           "ai_reply_enabled": {
             "description": "Switches the chat agent on or off for this contact only.",
-            "example": false,
-            "type": "boolean"
-          },
-          "needs_attention": {
-            "description": "false marks the conversation done, clearing its red flag.",
             "example": false,
             "type": "boolean"
           },
@@ -3350,14 +3340,6 @@
               "example": "Alex",
               "type": "string"
             }
-          },
-          {
-            "description": "true lists only the conversations waiting for a person.",
-            "in": "query",
-            "name": "needs_attention",
-            "schema": {
-              "type": "boolean"
-            }
           }
         ],
         "responses": {
@@ -3520,14 +3502,6 @@
             "schema": {
               "example": "+15557654321",
               "type": "string"
-            }
-          },
-          {
-            "description": "true lists only the conversations waiting for a person.",
-            "in": "query",
-            "name": "needs_attention",
-            "schema": {
-              "type": "boolean"
             }
           }
         ],

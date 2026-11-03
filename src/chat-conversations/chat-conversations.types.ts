@@ -17,7 +17,8 @@ export type ConversationFilter = {
   status?: string;
   // Matches the contact's JID, phone or name, ignoring case.
   search?: string;
-  // true: only the ones waiting for a person (the dashboard's red count).
+  // The removed red flag. The column is always false now, so true matches
+  // nothing: a dashboard tab opened before the removal counts 0, not all.
   needsAttention?: boolean;
 };
 
@@ -40,7 +41,6 @@ export type ChatConversationResource = {
   peer_name: string | null;
   status: string;
   ai_reply_enabled: boolean;
-  needs_attention: boolean;
   message_count: number;
   last_message_role: string | null;
   last_message_at: string | null;
@@ -53,7 +53,6 @@ export type ChatConversationResource = {
 export type ConversationUpdate = {
   status?: string;
   aiReplyEnabled?: boolean;
-  needsAttention?: boolean;
 };
 
 export function toResource(
@@ -69,7 +68,6 @@ export function toResource(
     peer_name: row.peerName,
     status: row.status,
     ai_reply_enabled: row.aiReplyEnabled,
-    needs_attention: row.needsAttention,
     message_count: row.messageCount,
     last_message_role: row.lastMessageRole,
     last_message_at: row.lastMessageAt?.toISOString() ?? null,
@@ -158,9 +156,10 @@ export function parseListQuery(q: Record<string, string | undefined>) {
 
 const UPDATE_FIELDS = ['status', 'ai_reply_enabled', 'needs_attention'];
 
-// The PATCH body: status, the AI switch and the red "needs a person" flag
-// (false = marked done) may change, at least one of them; the messages are
-// what happened.
+// The PATCH body: status and the AI switch may change, at least one of them;
+// the messages are what happened. needs_attention (the removed red flag's
+// "mark as done") is still accepted and ignored, so a dashboard tab opened
+// before the removal doesn't get an error.
 export function parseUpdate(body: unknown): ConversationUpdate {
   const fields = asObject(body);
   const unknown = Object.keys(fields).find(
@@ -185,11 +184,14 @@ export function parseUpdate(body: unknown): ConversationUpdate {
     update.status = status;
   }
   update.aiReplyEnabled = optionalBoolean(fields, 'ai_reply_enabled');
-  update.needsAttention = optionalBoolean(fields, 'needs_attention');
-  if (Object.values(update).every((value) => value === undefined)) {
+  const markedDone = optionalBoolean(fields, 'needs_attention');
+  if (
+    Object.values(update).every((value) => value === undefined) &&
+    markedDone === undefined
+  ) {
     throw apiError(
       HttpStatus.BAD_REQUEST,
-      'status, ai_reply_enabled or needs_attention is required',
+      'status or ai_reply_enabled is required',
     );
   }
   return update;
