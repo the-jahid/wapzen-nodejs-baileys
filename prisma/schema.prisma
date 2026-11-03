@@ -148,6 +148,9 @@ model ChatConversation {
   status          String    @default("open")
   // Off: the agent stays quiet for this contact and a person answers.
   aiReplyEnabled  Boolean   @default(true) @map("ai_reply_enabled")
+  // Red in the dashboard until a person marks it done. Raised by triggers
+  // when the AI goes off and when the customer writes while it is off.
+  needsAttention  Boolean   @default(false) @map("needs_attention")
   messageCount    Int       @default(0) @map("message_count")
   // 'user' | 'assistant'
   lastMessageRole String?   @map("last_message_role")

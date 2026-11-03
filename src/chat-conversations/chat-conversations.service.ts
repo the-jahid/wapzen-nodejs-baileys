@@ -174,6 +174,8 @@ function whereFor(
   if (filter.chatAgentId) where.chatAgentId = filter.chatAgentId;
   if (filter.phoneNumberId) where.phoneNumberId = filter.phoneNumberId;
   if (filter.status) where.status = filter.status;
+  if (filter.needsAttention !== undefined)
+    where.needsAttention = filter.needsAttention;
   // The contact is searched by whichever of these the person typing knows.
   if (filter.search) {
     const contains = { contains: filter.search, mode: 'insensitive' as const };

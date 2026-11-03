@@ -17,6 +17,8 @@ export type ConversationFilter = {
   status?: string;
   // Matches the contact's JID, phone or name, ignoring case.
   search?: string;
+  // true: only the ones waiting for a person (the dashboard's red count).
+  needsAttention?: boolean;
 };
 
 // One saved message as the API returns it (ChatConversationMessage).
@@ -38,6 +40,7 @@ export type ChatConversationResource = {
   peer_name: string | null;
   status: string;
   ai_reply_enabled: boolean;
+  needs_attention: boolean;
   message_count: number;
   last_message_role: string | null;
   last_message_at: string | null;
@@ -46,10 +49,11 @@ export type ChatConversationResource = {
   messages?: ChatMessageResource[];
 };
 
-// The PATCH body once checked: whichever of the two was sent.
+// The PATCH body once checked: whichever fields were sent.
 export type ConversationUpdate = {
   status?: string;
   aiReplyEnabled?: boolean;
+  needsAttention?: boolean;
 };
 
 export function toResource(
@@ -65,6 +69,7 @@ export function toResource(
     peer_name: row.peerName,
     status: row.status,
     ai_reply_enabled: row.aiReplyEnabled,
+    needs_attention: row.needsAttention,
     message_count: row.messageCount,
     last_message_role: row.lastMessageRole,
     last_message_at: row.lastMessageAt?.toISOString() ?? null,
@@ -131,6 +136,16 @@ export function parseListQuery(q: Record<string, string | undefined>) {
   filter.chatAgentId = q.chat_agent_id?.trim() || undefined;
   filter.phoneNumberId = q.phone_number_id?.trim() || undefined;
   filter.search = q.search?.trim() || undefined;
+  const attention = q.needs_attention?.trim();
+  if (attention) {
+    if (attention === 'true' || attention === 'false')
+      filter.needsAttention = attention === 'true';
+    else
+      errors.push({
+        field: 'needs_attention',
+        message: 'needs_attention must be true or false',
+      });
+  }
 
   if (errors.length > 0) {
     throw new HttpException(
@@ -141,12 +156,15 @@ export function parseListQuery(q: Record<string, string | undefined>) {
   return { page, limit, filter };
 }
 
-// The PATCH body: status and the AI switch may change, at least one of them;
-// the messages are what happened.
+const UPDATE_FIELDS = ['status', 'ai_reply_enabled', 'needs_attention'];
+
+// The PATCH body: status, the AI switch and the red "needs a person" flag
+// (false = marked done) may change, at least one of them; the messages are
+// what happened.
 export function parseUpdate(body: unknown): ConversationUpdate {
   const fields = asObject(body);
   const unknown = Object.keys(fields).find(
-    (key) => key !== 'status' && key !== 'ai_reply_enabled',
+    (key) => !UPDATE_FIELDS.includes(key),
   );
   if (unknown) {
     throw apiError(
@@ -166,25 +184,24 @@ export function parseUpdate(body: unknown): ConversationUpdate {
     }
     update.status = status;
   }
-  if (
-    fields.ai_reply_enabled !== undefined &&
-    fields.ai_reply_enabled !== null
-  ) {
-    if (typeof fields.ai_reply_enabled !== 'boolean') {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'ai_reply_enabled must be true or false',
-      );
-    }
-    update.aiReplyEnabled = fields.ai_reply_enabled;
-  }
-  if (update.status === undefined && update.aiReplyEnabled === undefined) {
+  update.aiReplyEnabled = optionalBoolean(fields, 'ai_reply_enabled');
+  update.needsAttention = optionalBoolean(fields, 'needs_attention');
+  if (Object.values(update).every((value) => value === undefined)) {
     throw apiError(
       HttpStatus.BAD_REQUEST,
-      'status or ai_reply_enabled is required',
+      'status, ai_reply_enabled or needs_attention is required',
     );
   }
   return update;
+}
+
+function optionalBoolean(fields: Record<string, unknown>, key: string) {
+  const value = fields[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'boolean') {
+    throw apiError(HttpStatus.BAD_REQUEST, `${key} must be true or false`);
+  }
+  return value;
 }
 
 // The send-message body: { content }, 1–4096 characters once trimmed.
