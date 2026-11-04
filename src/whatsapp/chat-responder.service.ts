@@ -7,7 +7,10 @@ import {
   type BaseMessage,
 } from '@langchain/core/messages';
 import { activity } from '../activity/activity';
-import { HOURLY_REPLY_LIMIT } from '../chat-agents/chat-agents.types';
+import {
+  GROUP_HOURLY_REPLY_LIMIT,
+  HOURLY_REPLY_LIMIT,
+} from '../chat-agents/chat-agents.types';
 import {
   appendMessage,
   ensureConversation,
@@ -426,7 +429,8 @@ export class ChatResponderService {
       );
       return '';
     }
-    if (!(await this.claimReply(agent))) return '';
+    const inGroup = isGroupJid(chat.peerJid);
+    if (!(await this.claimReply(agent, inGroup))) return '';
 
     const key = `${agent.id}|${chat.phoneNumberId}|${chat.peerJid}`;
     let sent = false;
@@ -528,36 +532,60 @@ export class ChatResponderService {
     } finally {
       if (!sent) {
         await chat.setTyping(false).catch(() => undefined);
-        await this.releaseReply(agent);
+        await this.releaseReply(agent, inGroup);
       }
     }
   }
 
   // Takes one reply from the agent's hour before asking the model, so replies
   // running together (several chats, several instances) can't overshoot it. A
-  // window older than an hour starts over at this reply. False at the limit.
-  private async claimReply(agent: ReplyingAgent) {
+  // window older than an hour starts over at this reply. A reply in a group also
+  // takes one from the agent's group hour, in the same statement, so it's never
+  // counted in one and refused by the other. False at either limit.
+  private async claimReply(agent: ReplyingAgent, inGroup: boolean) {
     try {
-      const [claimed] = await this.prisma.$queryRaw<{ count: number }[]>`
+      const [claimed] = await this.prisma.$queryRaw<
+        { count: number; group_count: number }[]
+      >`
         UPDATE chat_agents SET
           hourly_reply_count = CASE
             WHEN hourly_window_started_at > now() - interval '1 hour'
             THEN hourly_reply_count + 1 ELSE 1 END,
           hourly_window_started_at = CASE
             WHEN hourly_window_started_at > now() - interval '1 hour'
-            THEN hourly_window_started_at ELSE now() END
+            THEN hourly_window_started_at ELSE now() END,
+          group_hourly_reply_count = CASE
+            WHEN NOT ${inGroup}::boolean THEN group_hourly_reply_count
+            WHEN group_hourly_window_started_at > now() - interval '1 hour'
+            THEN group_hourly_reply_count + 1 ELSE 1 END,
+          group_hourly_window_started_at = CASE
+            WHEN NOT ${inGroup}::boolean THEN group_hourly_window_started_at
+            WHEN group_hourly_window_started_at > now() - interval '1 hour'
+            THEN group_hourly_window_started_at ELSE now() END
         WHERE id = ${agent.id}
           AND (hourly_window_started_at IS NULL
             OR hourly_window_started_at <= now() - interval '1 hour'
             OR hourly_reply_count < ${HOURLY_REPLY_LIMIT})
-        RETURNING hourly_reply_count AS count`;
+          AND (NOT ${inGroup}::boolean
+            OR group_hourly_window_started_at IS NULL
+            OR group_hourly_window_started_at <= now() - interval '1 hour'
+            OR group_hourly_reply_count < ${GROUP_HOURLY_REPLY_LIMIT})
+        RETURNING hourly_reply_count AS count,
+          group_hourly_reply_count AS group_count`;
       if (!claimed) {
-        this.logger.log(`chat agent ${agent.id} is at its hourly reply limit`);
+        this.logger.log(
+          `chat agent ${agent.id} is at its hourly ${inGroup ? 'group ' : ''}reply limit`,
+        );
         return false;
       }
       if (claimed.count === HOURLY_REPLY_LIMIT) {
         activity(
           `hourly reply limit reached: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
+        );
+      }
+      if (inGroup && claimed.group_count === GROUP_HOURLY_REPLY_LIMIT) {
+        activity(
+          `hourly group reply limit reached: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
         );
       }
       return true;
@@ -571,11 +599,18 @@ export class ChatResponderService {
   }
 
   // Hands back a reply claimed for a message that got no answer.
-  private async releaseReply(agent: ReplyingAgent) {
+  private async releaseReply(agent: ReplyingAgent, inGroup: boolean) {
     await this.prisma.chatAgent
       .updateMany({
-        where: { id: agent.id, hourlyReplyCount: { gt: 0 } },
-        data: { hourlyReplyCount: { decrement: 1 } },
+        where: {
+          id: agent.id,
+          hourlyReplyCount: { gt: 0 },
+          ...(inGroup ? { groupHourlyReplyCount: { gt: 0 } } : {}),
+        },
+        data: {
+          hourlyReplyCount: { decrement: 1 },
+          ...(inGroup ? { groupHourlyReplyCount: { decrement: 1 } } : {}),
+        },
       })
       .catch(() => undefined);
   }

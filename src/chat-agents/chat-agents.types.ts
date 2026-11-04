@@ -25,6 +25,10 @@ export const MAX_CHAT_AGENTS_PER_USER = 1;
 // status isn't touched, so nothing has to switch it back on. The dashboard
 // only hears of it while it is reached (hourly_limit_resets_at).
 export const HOURLY_REPLY_LIMIT = 100;
+// Of those, at most this many in groups, across all the agent's groups, with an
+// hour of its own. At this limit the agent goes quiet in groups only and keeps
+// answering private chats, so the dashboard isn't told it has stopped.
+export const GROUP_HOURLY_REPLY_LIMIT = 50;
 const HOUR_MS = 60 * 60 * 1000;
 
 // The prompt is resent with every reply, so its length is capped (Go

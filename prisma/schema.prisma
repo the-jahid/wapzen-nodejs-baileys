@@ -70,6 +70,10 @@ model ChatAgent {
   // at HOURLY_REPLY_LIMIT (chat-responder.service.ts). Not shown anywhere.
   hourlyReplyCount      Int       @default(0) @map("hourly_reply_count")
   hourlyWindowStartedAt DateTime? @map("hourly_window_started_at") @db.Timestamptz
+  // The same for replies in groups, capped at GROUP_HOURLY_REPLY_LIMIT. A group
+  // reply counts here and in hourlyReplyCount. Not shown anywhere.
+  groupHourlyReplyCount      Int       @default(0) @map("group_hourly_reply_count")
+  groupHourlyWindowStartedAt DateTime? @map("group_hourly_window_started_at") @db.Timestamptz
   createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
