@@ -107,10 +107,26 @@ model PhoneNumber {
   authValues    WhatsAppAuth[]
   conversations ChatConversation[]
   bulkCampaigns BulkCampaign[]
+  aiGroups      AiGroup[]
 
   @@unique([userId, phoneNumber])
   @@index([userId])
   @@map("phone_numbers")
+}
+
+// A WhatsApp group the owner switched the AI on in. No row means off, so every
+// group starts off. name is the group's name when it was switched on; the live
+// list comes from WhatsApp itself.
+model AiGroup {
+  phoneNumberId String   @map("phone_number_id")
+  groupJid      String   @map("group_jid")
+  name          String?
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  phoneNumber PhoneNumber @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+
+  @@id([phoneNumberId, groupJid])
+  @@map("ai_groups")
 }
 
 // Baileys auth state for one phone number: the "creds" row plus every signal

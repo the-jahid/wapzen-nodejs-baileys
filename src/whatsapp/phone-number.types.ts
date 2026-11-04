@@ -142,6 +142,18 @@ export function parseLogoutRequest(body: unknown): string {
   return id.trim();
 }
 
+// The body and path of PATCH /v1/phone-number/:id/groups/:group_jid.
+export function parseGroupSwitch(groupJid: string, body: unknown) {
+  const jid = groupJid.trim();
+  if (!/^[0-9-]+@g\.us$/.test(jid)) {
+    throw badRequest('group_jid must be a WhatsApp group id');
+  }
+  if (!isObject(body) || typeof body.ai_enabled !== 'boolean') {
+    throw badRequest('ai_enabled must be true or false');
+  }
+  return { jid, on: body.ai_enabled };
+}
+
 function badRequest(message: string) {
   return apiError(HttpStatus.BAD_REQUEST, message);
 }

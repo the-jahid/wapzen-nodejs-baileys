@@ -3,6 +3,7 @@ import { Prisma } from '../generated/prisma/client';
 import { apiError } from '../chat-agents/chat-agents.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChatResponderService } from '../whatsapp/chat-responder.service';
+import { isGroupJid } from '../whatsapp/group-chat';
 import {
   NumberNotConnectedError,
   WhatsAppService,
@@ -67,8 +68,23 @@ export class ChatConversationsService {
   }
 
   // Closing is bookkeeping for whoever reads the inbox; it doesn't stop the
-  // agent answering. Switching the AI off does, for this contact only.
+  // agent answering. Switching the AI off does, for this contact only. On a
+  // group's thread the switch is the group's, the one on the Groups page.
   async update(userId: string, id: string, update: ConversationUpdate) {
+    if (update.aiReplyEnabled !== undefined) {
+      const thread = await this.prisma.chatConversation.findFirst({
+        where: { id, userId },
+        select: { phoneNumberId: true, peerJid: true },
+      });
+      if (thread?.phoneNumberId && isGroupJid(thread.peerJid)) {
+        await this.whatsapp.setGroupAi(
+          userId,
+          thread.phoneNumberId,
+          thread.peerJid,
+          update.aiReplyEnabled,
+        );
+      }
+    }
     const { count } = await this.prisma.chatConversation.updateMany({
       where: { id, userId },
       data: { ...update, updatedAt: new Date() },

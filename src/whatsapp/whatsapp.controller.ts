@@ -4,13 +4,18 @@ import {
   Get,
   HttpCode,
   Param,
+  Patch,
   Post,
   UseGuards,
 } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
 import type { User } from '../generated/prisma/client';
 import { ClerkAuthGuard, CurrentUser } from '../auth/auth.guard';
-import { parseLoginRequest, parseLogoutRequest } from './phone-number.types';
+import {
+  parseGroupSwitch,
+  parseLoginRequest,
+  parseLogoutRequest,
+} from './phone-number.types';
 import { WhatsAppService } from './whatsapp.service';
 
 // The Go server's phone-number API, documented in docs/openapi.json (so the
@@ -85,6 +90,38 @@ export class WhatsAppController {
       message: 'Phone number retrieved successfully',
       data,
       links: { self: `/v1/phone-number/${data.id}` },
+    };
+  }
+
+  // The WhatsApp groups this number is in, read live from WhatsApp, each with
+  // whether the AI is on there.
+  @Get(':phone_number_id/groups')
+  async groups(
+    @CurrentUser() user: User,
+    @Param('phone_number_id') id: string,
+  ) {
+    return {
+      success: true,
+      message: 'Groups retrieved successfully',
+      data: await this.whatsapp.listGroups(user.id, id.trim()),
+    };
+  }
+
+  // Switches the AI on or off in one group.
+  @Patch(':phone_number_id/groups/:group_jid')
+  async switchGroup(
+    @CurrentUser() user: User,
+    @Param('phone_number_id') id: string,
+    @Param('group_jid') groupJid: string,
+    @Body() body: unknown,
+  ) {
+    const { jid, on } = parseGroupSwitch(groupJid, body);
+    return {
+      success: true,
+      message: on
+        ? 'AI switched on in the group'
+        : 'AI switched off in the group',
+      data: await this.whatsapp.setGroupAi(user.id, id.trim(), jid, on),
     };
   }
 }

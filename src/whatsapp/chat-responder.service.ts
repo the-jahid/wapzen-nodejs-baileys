@@ -29,6 +29,7 @@ import {
 } from '../orders/order-tool';
 import { OrdersService } from '../orders/orders.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { isGroupJid } from './group-chat';
 import {
   imageDataUrl,
   type IncomingMedia,
@@ -66,6 +67,10 @@ const MAX_HISTORY = CHAT_SUMMARY_AT;
 // Chats kept in memory across every number; past this the one idle longest
 // is forgotten, so memory stays flat however many people write in.
 const MAX_CONVERSATIONS = 5_000;
+// Added to the owner's prompt in a group only: there, several people share one
+// chat, and the agent only hears from them when they tag it.
+const GROUP_CHAT_NOTE =
+  "This chat is a WhatsApp group. Each message starts with the name of the person who wrote it, and you only see the messages that tag you or reply to you. Answer the person who wrote to you, by name when it's clear who you're talking to.";
 
 type Turn = { role: 'user' | 'assistant'; text: string };
 
@@ -96,6 +101,9 @@ export type IncomingChat = {
   // The contact's number (E.164) and WhatsApp display name, when known.
   peerPhone?: string;
   peerName?: string;
+  // In a group, the WhatsApp name of the person who wrote this. peerJid is then
+  // the group.
+  sender?: string;
   // The WhatsApp message id, so a redelivery isn't saved twice.
   messageId?: string;
   // What the person typed, or a photo's caption; '' for a bare voice message
@@ -193,7 +201,7 @@ export class ChatResponderService {
   // socket. Each message is still saved on its own, the reply after the last.
   private async answer(incoming: IncomingChat[]) {
     const { phoneNumberId, peerJid } = incoming[0];
-    const [agent, aiOff] = await Promise.all([
+    const [agent, aiOff, group] = await Promise.all([
       this.prisma.chatAgent.findFirst({
         where: { phoneNumberId, status: 'active' },
         include: {
@@ -214,14 +222,36 @@ export class ChatResponderService {
       this.prisma.chatConversation.count({
         where: { phoneNumberId, peerJid, aiReplyEnabled: false },
       }),
+      // Asked here as well as on the socket, which only knows what this server
+      // was told: a group switched off a moment ago stays off.
+      isGroupJid(peerJid)
+        ? this.prisma.aiGroup.findUnique({
+            where: {
+              phoneNumberId_groupJid: { phoneNumberId, groupJid: peerJid },
+            },
+          })
+        : undefined,
     ]);
     if (!agent) return;
+    if (isGroupJid(peerJid) && !group) return;
 
     // What the agent doesn't read (a voice message with the switch off, say)
-    // goes unanswered and unsaved, as it did before the switches existed.
+    // goes unanswered and unsaved, as it did before the switches existed. In a
+    // group each message says who wrote it, on the thread and to the agent, and
+    // the thread is named after the group.
     const chats = (
       await Promise.all(incoming.map((c) => this.readMedia(agent, c)))
-    ).filter((c): c is ReadChat => !!c);
+    )
+      .filter((c): c is ReadChat => !!c)
+      .map((c) =>
+        group
+          ? {
+              ...c,
+              peerName: group.name ?? undefined,
+              text: `${c.sender}: ${c.text}`,
+            }
+          : c,
+      );
     if (!chats.length) return;
     const chat: ReadChat = {
       ...chats[chats.length - 1],
@@ -425,10 +455,11 @@ export class ChatResponderService {
       // with order taking on, and passages from attached knowledge bases. The
       // one line added for every agent is the date and time, in the zone of
       // the agent's number. The date and the passages change, so they go last
-      // and the rest caches.
+      // and the rest caches. A group gets a note on how to read it.
       const prompt = [
         agent.systemPrompt.trim(),
         toolbox?.takesOrders ? agent.orderInstructions.trim() : '',
+        isGroupJid(chat.peerJid) ? GROUP_CHAT_NOTE : '',
         dateContext(new Date(), zoneForPhone(agent.phoneNumber?.phoneNumber)),
         knowledge,
       ]
@@ -549,11 +580,13 @@ export class ChatResponderService {
 
   // What create_order does in this chat, when the owner has ordering on. An
   // "@lid" chat often arrives with no number, which the saved LID map may know.
+  // A group takes no orders: an open order belongs to the thread, so two people
+  // ordering there would change each other's order.
   private async ordersFor(
     agent: ReplyingAgent,
     chat: IncomingChat,
   ): Promise<ChatOrders | undefined> {
-    if (!agent.orderEnabled) return undefined;
+    if (!agent.orderEnabled || isGroupJid(chat.peerJid)) return undefined;
     const [{ peerPhone }] = await resolvePeerPhones(this.prisma, [
       {
         phoneNumberId: chat.phoneNumberId,

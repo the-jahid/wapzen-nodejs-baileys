@@ -36,6 +36,14 @@ import { apiError } from '../chat-agents/chat-agents.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { usePrismaAuthState } from './auth-state';
 import { ChatResponderService } from './chat-responder.service';
+import {
+  contextInfoOf,
+  type GroupSummary,
+  isAddressed,
+  quotesSomeoneElse,
+  toGroupSummary,
+  withoutTag,
+} from './group-chat';
 import type { IncomingMedia } from './media';
 import {
   LoginRequest,
@@ -100,6 +108,13 @@ const STALE_MESSAGE_SECONDS = 5 * 60;
 // per business number, the largest thing a number holds. Every mapping is
 // also in whatsapp_auth, so one dropped here costs a database read.
 const LID_CACHE_SIZE = 1_000;
+// How long a number's group list is reused. Switching several groups on in a
+// row, or reopening the page, mustn't ask WhatsApp each time.
+const GROUP_LIST_TTL_MS = 30_000;
+// The most of a quoted message handed to the agent.
+const MAX_QUOTE_CHARS = 500;
+// The name of someone in a group who has none set in WhatsApp.
+const UNNAMED_SENDER = 'Someone';
 
 export class NumberNotConnectedError extends Error {
   constructor() {
@@ -144,6 +159,13 @@ export class WhatsAppService
   // number's row; the dashboard keeps polling the login's id, so it's mapped.
   private readonly relinked = new Map<string, string>();
   private readonly traces = new WeakMap<WASocket, DeviceTrace>();
+  // The groups the AI is on in, by row id. Read for every stanza a socket gets,
+  // so it has to be in memory; ai_groups is what fills it.
+  private readonly aiGroups = new Map<string, Set<string>>();
+  private readonly groupLists = new Map<
+    string,
+    { at: number; groups: Promise<GroupSummary[]> }
+  >();
   private shuttingDown = false;
   private version?: { value: WAVersion; at: number };
 
@@ -402,6 +424,119 @@ export class WhatsAppService
     return { pnJid, lidJid: lid ? jidNormalizedUser(lid) : null };
   }
 
+  // The groups a linked number is in, each with whether the AI is on there, and
+  // the agent that would answer.
+  async listGroups(userId: string, id: string) {
+    const sock = await this.liveSocket(userId, id);
+    const [groups, on, agent] = await Promise.all([
+      this.groupsOf(id, sock),
+      this.prisma.aiGroup.findMany({
+        where: { phoneNumberId: id },
+        select: { groupJid: true },
+      }),
+      this.prisma.chatAgent.findFirst({
+        where: { phoneNumberId: id },
+        select: { id: true, agentName: true, status: true },
+      }),
+    ]);
+    const enabled = new Set(on.map((group) => group.groupJid));
+    return {
+      chat_agent: agent && {
+        id: agent.id,
+        name: agent.agentName,
+        status: agent.status,
+      },
+      groups: groups.map((group) => ({
+        ...group,
+        ai_enabled: enabled.has(group.jid),
+      })),
+    };
+  }
+
+  // Switches the AI on or off in one group; the thread's own switch in the
+  // dashboard follows. Off always works, number offline or not: nothing about
+  // it needs WhatsApp.
+  async setGroupAi(userId: string, id: string, jid: string, on: boolean) {
+    if (on) {
+      const sock = await this.liveSocket(userId, id);
+      const group = (await this.groupsOf(id, sock)).find((g) => g.jid === jid);
+      if (!group) {
+        throw apiError(
+          HttpStatus.NOT_FOUND,
+          'This number is not in that group.',
+        );
+      }
+      if (!group.can_send) {
+        throw apiError(
+          HttpStatus.CONFLICT,
+          'Only admins can post in this group, so the AI could not reply there.',
+        );
+      }
+      await this.prisma.aiGroup.upsert({
+        where: { phoneNumberId_groupJid: { phoneNumberId: id, groupJid: jid } },
+        create: { phoneNumberId: id, groupJid: jid, name: group.name },
+        update: { name: group.name },
+      });
+      this.aiGroups.get(id)?.add(jid);
+    } else {
+      await this.owned(userId, id);
+      await this.prisma.aiGroup.deleteMany({
+        where: { phoneNumberId: id, groupJid: jid },
+      });
+      this.aiGroups.get(id)?.delete(jid);
+    }
+    await this.prisma.chatConversation.updateMany({
+      where: { phoneNumberId: id, peerJid: jid },
+      data: { aiReplyEnabled: on },
+    });
+    await this.reportNumber(id, on ? 'group AI on' : 'group AI off');
+    return { jid, ai_enabled: on };
+  }
+
+  // The socket of one of the user's numbers, if it's linked and online.
+  private async liveSocket(userId: string, id: string) {
+    const row = await this.owned(userId, id);
+    const sock = this.sockets.get(id);
+    if (!sock || row.status !== 'connected' || this.logins.has(id)) {
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'This number is offline. Reconnect it on the Phone Numbers page and try again.',
+      );
+    }
+    return sock;
+  }
+
+  // A number's groups, from WhatsApp. A community's parent has no chat of its
+  // own to answer in, so it isn't one.
+  private async groupsOf(id: string, sock: WASocket) {
+    const cached = this.groupLists.get(id);
+    if (cached && Date.now() - cached.at < GROUP_LIST_TTL_MS) {
+      return this.readGroups(id, cached.groups);
+    }
+    const own = ownJids(sock);
+    const groups = sock.groupFetchAllParticipating().then((all) =>
+      Object.values(all)
+        .filter((group) => !group.isCommunity)
+        .map((group) => toGroupSummary(group, own))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    );
+    this.groupLists.set(id, { at: Date.now(), groups });
+    return this.readGroups(id, groups);
+  }
+
+  private async readGroups(id: string, groups: Promise<GroupSummary[]>) {
+    try {
+      return await groups;
+    } catch (err) {
+      this.groupLists.delete(id);
+      this.logger.warn(`reading ${id}'s groups: ${(err as Error).message}`);
+      throw apiError(
+        HttpStatus.BAD_GATEWAY,
+        "Couldn't read this number's groups from WhatsApp. Try again in a moment.",
+      );
+    }
+  }
+
   private sendFrom(sock: WASocket, jid: string, text: string) {
     const trace = this.traces.get(sock);
     if (trace) trace.sentAt = Date.now();
@@ -467,7 +602,7 @@ export class WhatsAppService
       this.waVersion(),
     ]);
     if (!state.creds.me) return;
-    const sock = this.makeSocket(state, version);
+    const sock = this.makeSocket(id, state, version);
 
     await new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -623,6 +758,8 @@ export class WhatsAppService
   private async deleteRow(id: string) {
     this.logins.delete(id);
     this.failures.delete(id);
+    this.aiGroups.delete(id);
+    this.groupLists.delete(id);
     await this.prisma.$transaction([
       this.prisma.chatAgent.updateMany({
         where: { phoneNumberId: id },
@@ -632,7 +769,11 @@ export class WhatsAppService
     ]);
   }
 
-  private makeSocket(state: AuthenticationState, version: WAVersion) {
+  private makeSocket(
+    id: string,
+    state: AuthenticationState,
+    version: WAVersion,
+  ) {
     const sock = makeWASocket({
       version,
       auth: {
@@ -644,11 +785,15 @@ export class WhatsAppService
       markOnlineOnConnect: false,
       // Old messages aren't answered, so there's no point downloading them.
       syncFullHistory: false,
-      // Groups, status updates and channels never get a reply, so Baileys
-      // acks them without decrypting or storing their sender keys. On a busy
-      // number that is most of the traffic, and most of the CPU.
+      // Status updates, channels and groups the AI is off in never get a reply,
+      // so Baileys acks them without decrypting or storing their sender keys.
+      // On a busy number that is most of the traffic, and most of the CPU. A
+      // group switched on later has no sender keys yet: the first message from
+      // each person can't be read, so Baileys asks for it again.
       shouldIgnoreJid: (jid) =>
-        isJidGroup(jid) || isJidBroadcast(jid) || isJidNewsletter(jid),
+        isJidGroup(jid)
+          ? !this.aiGroups.get(id)?.has(jid)
+          : isJidBroadcast(jid) || isJidNewsletter(jid),
       // What this socket sends isn't reported back as a new message, so a
       // message "from me" can only be one a person sent from the phone (or
       // another linked device), which is saved on that customer's thread.
@@ -673,11 +818,19 @@ export class WhatsAppService
   }
 
   private async connect(id: string, opts: ConnectOptions = {}) {
-    const [{ state, saveCreds }, version] = await Promise.all([
+    const [{ state, saveCreds }, version, groups] = await Promise.all([
       usePrismaAuthState(this.prisma, id),
       this.waVersion(),
+      // A failed read leaves the groups off, and mustn't keep the number down.
+      this.prisma.aiGroup
+        .findMany({ where: { phoneNumberId: id }, select: { groupJid: true } })
+        .catch((err: Error) => {
+          this.logger.error(`reading ${id}'s AI groups: ${err.message}`);
+          return [];
+        }),
     ]);
-    const sock = this.makeSocket(state, version);
+    this.aiGroups.set(id, new Set(groups.map((group) => group.groupJid)));
+    const sock = this.makeSocket(id, state, version);
     this.sockets.set(id, sock);
     const trace: DeviceTrace = {};
     this.traces.set(sock, trace);
@@ -795,12 +948,17 @@ export class WhatsAppService
 
   // Hands a just-received private message (text, voice message or photo) to
   // the chat agent on this number, which decides whether it reads the media.
-  // Groups, status updates and channels are skipped. A message from the
-  // account itself was typed by a person on the phone: see personSent.
+  // Status updates and channels are skipped, and so is a group unless the AI
+  // is on there and the message is for this number. A message from the account
+  // itself was typed by a person on the phone: see personSent.
   private answer(id: string, sock: WASocket, message: WAMessage) {
     const jid = message.key.remoteJid;
     if (!jid) return;
-    if (isJidGroup(jid) || isJidBroadcast(jid) || isJidNewsletter(jid)) return;
+    if (isJidBroadcast(jid) || isJidNewsletter(jid)) return;
+    if (isJidGroup(jid)) {
+      this.answerInGroup(id, sock, message, jid);
+      return;
+    }
     const sentAt = Number(message.messageTimestamp ?? 0);
     if (sentAt && Date.now() / 1000 - sentAt > STALE_MESSAGE_SECONDS) return;
     if (message.key.fromMe) {
@@ -837,6 +995,57 @@ export class WhatsAppService
       );
   }
 
+  // A message in a group. Only one that tags this number or replies to it gets
+  // through, so the AI doesn't join in on everything said there, and the rest
+  // isn't saved. The reply doesn't quote anyone: a quote of another AI number's
+  // message would read to that number as a reply to it, and the two would
+  // answer each other for good. What the owner writes there from the phone is
+  // theirs, and isn't saved either.
+  private answerInGroup(
+    id: string,
+    sock: WASocket,
+    message: WAMessage,
+    jid: string,
+  ) {
+    if (!this.aiGroups.get(id)?.has(jid) || message.key.fromMe) return;
+    const sentAt = Number(message.messageTimestamp ?? 0);
+    if (sentAt && Date.now() / 1000 - sentAt > STALE_MESSAGE_SECONDS) return;
+
+    const content = normalizeMessageContent(message.message);
+    const info = contextInfoOf(content);
+    const own = ownJids(sock);
+    if (!isAddressed(info, own)) return;
+
+    const media = this.incomingMedia(sock, message, content);
+    const words = withoutTag(messageText(content)?.trim() ?? '', own);
+    // Tagging the number under someone's question is asking it to answer that.
+    const quoted = quotesSomeoneElse(info, own)
+      ? messageText(normalizeMessageContent(info?.quotedMessage))?.trim()
+      : undefined;
+    const text = quoted
+      ? `${words}\n(Replying to: "${quoted.slice(0, MAX_QUOTE_CHARS)}")`.trim()
+      : words;
+    if (!text && !media) return;
+
+    this.responder
+      .respond({
+        phoneNumberId: id,
+        peerJid: jid,
+        sender: message.pushName?.trim() || UNNAMED_SENDER,
+        messageId: message.key.id ?? undefined,
+        text,
+        media,
+        send: (reply) => this.sendFrom(sock, jid, reply),
+        setTyping: (typing) =>
+          sock.sendPresenceUpdate(typing ? 'composing' : 'paused', jid),
+      })
+      .catch((err: Error) =>
+        this.logger.error(
+          `answering in a group on ${id} failed: ${err.message}`,
+        ),
+      );
+  }
+
   // A person wrote to a customer from the number's own WhatsApp: the message
   // is saved on the customer's thread. The AI keeps answering; only the
   // dashboard switch turns it off. Notes to self, reactions, edits and
@@ -846,9 +1055,7 @@ export class WhatsAppService
     const text = messageText(content)?.trim() || mediaLabel(content);
     if (!text) return;
 
-    const own = [sock.user?.id, sock.user?.lid]
-      .filter((j): j is string => !!j)
-      .map(jidNormalizedUser);
+    const own = ownJids(sock);
     const jids = [message.key.remoteJid, message.key.remoteJidAlt]
       .filter((j): j is string => !!j)
       .map(jidNormalizedUser);
@@ -1134,6 +1341,13 @@ function pairingAccepted(sock: WASocket) {
     sock.ws.on('CB:iq,,link_code_companion_reg', accepted);
     sock.ws.on('CB:iq,type:error', refused);
   });
+}
+
+// Everything WhatsApp may call this number: its "@lid" and its phone JID.
+function ownJids(sock: WASocket) {
+  return [sock.user?.id, sock.user?.lid]
+    .filter((jid): jid is string => !!jid)
+    .map(jidNormalizedUser);
 }
 
 // The status code Baileys closed a socket with, if any.
