@@ -1047,9 +1047,9 @@ export class WhatsAppService
   }
 
   // A person wrote to a customer from the number's own WhatsApp: the message
-  // is saved on the customer's thread. The AI keeps answering; only the
-  // dashboard switch turns it off. Notes to self, reactions, edits and
-  // deletions don't count.
+  // is saved on the customer's thread while the number's agent is active, and
+  // not at all otherwise. The AI keeps answering; only the dashboard switch
+  // turns it off. Notes to self, reactions, edits and deletions don't count.
   private async personSent(id: string, sock: WASocket, message: WAMessage) {
     const content = normalizeMessageContent(message.message);
     const text = messageText(content)?.trim() || mediaLabel(content);

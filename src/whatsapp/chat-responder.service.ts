@@ -362,14 +362,18 @@ export class ChatResponderService {
   // A person wrote to the customer from the number's own WhatsApp: the
   // message joins the thread, as one sent from the dashboard would, so the
   // agent's next reply knows what was said. The AI stays as it is: only the
-  // conversation's switch turns it off.
+  // conversation's switch turns it off. With no active agent on the number
+  // nothing is saved: the phone is just someone's own WhatsApp then.
   async personSent(sent: PersonSent) {
     const phone = await this.prisma.phoneNumber.findUnique({
       where: { id: sent.phoneNumberId },
-      select: { userId: true, chatAgent: { select: { id: true } } },
+      select: {
+        userId: true,
+        chatAgent: { select: { id: true, status: true } },
+      },
     });
-    if (!phone) return;
-    const chatAgentId = phone.chatAgent?.id;
+    if (phone?.chatAgent?.status !== 'active') return;
+    const chatAgentId = phone.chatAgent.id;
 
     const found = await this.prisma.chatConversation.findFirst({
       where: {
@@ -405,14 +409,12 @@ export class ChatResponderService {
         );
       }
     });
-    if (chatAgentId) {
-      this.rememberSent(
-        chatAgentId,
-        sent.phoneNumberId,
-        thread.peerJid,
-        sent.text,
-      );
-    }
+    this.rememberSent(
+      chatAgentId,
+      sent.phoneNumberId,
+      thread.peerJid,
+      sent.text,
+    );
   }
 
   // Answers as the agent and returns what was sent, or '' when nothing was.
