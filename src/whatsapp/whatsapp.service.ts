@@ -769,6 +769,36 @@ export class WhatsAppService
     ]);
   }
 
+  // An open socket has no row behind it any more: its account was deleted, or
+  // the row was removed from outside this service. Nothing else would ever
+  // close it, and it would hold one of the phone's linked-device slots with no
+  // way to remove it from the dashboard. Queued work on a socket already closed
+  // ends up here too, and finds nothing to do.
+  private rowGone(id: string) {
+    if (!this.sockets.has(id)) return;
+    void (async () => {
+      // Unlinking can't be undone, so the row is looked up once more first.
+      const row = await this.prisma.phoneNumber.findUnique({
+        where: { id },
+        select: { id: true },
+      });
+      const sock = this.sockets.get(id);
+      if (row || !sock) return;
+
+      // A login the phone never finished has no device to remove.
+      const login = this.logins.get(id);
+      const waJid = login && !login.paired ? null : (sock.user?.id ?? null);
+      this.endLogin(id, 'cancelled');
+      this.failures.delete(id);
+      this.aiGroups.delete(id);
+      this.groupLists.delete(id);
+      this.logger.warn(`${id}: row deleted, closing its socket`);
+      await this.unlink(id, waJid);
+    })().catch((err: Error) =>
+      this.logger.warn(`closing ${id} failed: ${err.message}`),
+    );
+  }
+
   private makeSocket(
     id: string,
     state: AuthenticationState,
@@ -819,7 +849,7 @@ export class WhatsAppService
 
   private async connect(id: string, opts: ConnectOptions = {}) {
     const [{ state, saveCreds }, version, groups] = await Promise.all([
-      usePrismaAuthState(this.prisma, id),
+      usePrismaAuthState(this.prisma, id, () => this.rowGone(id)),
       this.waVersion(),
       // A failed read leaves the groups off, and mustn't keep the number down.
       this.prisma.aiGroup
