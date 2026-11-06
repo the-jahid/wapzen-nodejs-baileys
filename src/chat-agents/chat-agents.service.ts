@@ -1,4 +1,5 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { AgentFilesService } from '../agent-files/agent-files.service';
 import { Prisma } from '../generated/prisma/client';
 import { cleanText } from '../orders/orders.types';
 import { PrismaService } from '../prisma/prisma.service';
@@ -29,7 +30,10 @@ type Tx = Prisma.TransactionClient;
 export class ChatAgentsService {
   private readonly logger = new Logger(ChatAgentsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly files: AgentFilesService,
+  ) {}
 
   async list(userId: string, page: number, limit: number) {
     const [total, rows] = await Promise.all([
@@ -219,6 +223,7 @@ export class ChatAgentsService {
       where: { id, userId },
     });
     if (count === 0) throw notFound();
+    await this.files.removeForAgent(id);
   }
 
   // Runs fn in a transaction and turns anything that isn't already an API

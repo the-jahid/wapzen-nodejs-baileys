@@ -32,6 +32,10 @@ import makeWASocket, {
 } from 'baileys';
 import pino from 'pino';
 import { activity } from '../activity/activity';
+import {
+  type OutgoingFile,
+  sendsAsPhoto,
+} from '../agent-files/agent-files.types';
 import { apiError } from '../chat-agents/chat-agents.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { usePrismaAuthState } from './auth-state';
@@ -543,6 +547,21 @@ export class WhatsAppService
     return sock.sendMessage(jid, { text });
   }
 
+  private sendFileFrom(sock: WASocket, jid: string, file: OutgoingFile) {
+    const trace = this.traces.get(sock);
+    if (trace) trace.sentAt = Date.now();
+    return sock.sendMessage(
+      jid,
+      sendsAsPhoto(file.mimeType)
+        ? { image: file.data, mimetype: file.mimeType }
+        : {
+            document: file.data,
+            mimetype: file.mimeType,
+            fileName: file.fileName,
+          },
+    );
+  }
+
   // unlink for a request: a WhatsApp that can't be reached is a 502, and the
   // number goes back online so it keeps working until the next try.
   private async unlinkOrFail(id: string, waJid: string | null) {
@@ -1017,6 +1036,7 @@ export class WhatsAppService
         text,
         media,
         send: (reply) => this.sendFrom(sock, jid, reply),
+        sendFile: (file) => this.sendFileFrom(sock, jid, file),
         setTyping: (typing) =>
           sock.sendPresenceUpdate(typing ? 'composing' : 'paused', jid),
       })
@@ -1066,6 +1086,7 @@ export class WhatsAppService
         text,
         media,
         send: (reply) => this.sendFrom(sock, jid, reply),
+        sendFile: (file) => this.sendFileFrom(sock, jid, file),
         setTyping: (typing) =>
           sock.sendPresenceUpdate(typing ? 'composing' : 'paused', jid),
       })

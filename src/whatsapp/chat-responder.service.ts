@@ -7,6 +7,8 @@ import {
   type BaseMessage,
 } from '@langchain/core/messages';
 import { activity } from '../activity/activity';
+import { AgentFilesService } from '../agent-files/agent-files.service';
+import type { OutgoingFile } from '../agent-files/agent-files.types';
 import {
   GROUP_HOURLY_REPLY_LIMIT,
   HOURLY_REPLY_LIMIT,
@@ -44,7 +46,9 @@ import {
 import {
   ChatToolbox,
   dateContext,
+  FILE_SENT_MARK,
   zoneForPhone,
+  type ChatFile,
   type ChatOrders,
 } from '../tools/chat-toolbox';
 import {
@@ -114,6 +118,7 @@ export type IncomingChat = {
   text: string;
   media?: IncomingMedia;
   send: (text: string) => Promise<unknown>;
+  sendFile: (file: OutgoingFile) => Promise<unknown>;
   setTyping: (typing: boolean) => Promise<unknown>;
 };
 
@@ -154,6 +159,7 @@ export class ChatResponderService {
     private readonly config: ConfigService,
     private readonly indexer: IndexerService,
     private readonly orders: OrdersService,
+    private readonly files: AgentFilesService,
   ) {}
 
   // Queues a message to be answered with any others the person sends in the
@@ -437,11 +443,16 @@ export class ChatResponderService {
     try {
       await chat.setTyping(true).catch(() => undefined);
 
+      const [orders, files] = await Promise.all([
+        this.ordersFor(agent, chat),
+        this.filesFor(agent, chat),
+      ]);
       const toolbox = ChatToolbox.for(
         agent.tools.map((t) => t.tool),
         agent.id,
         chat.send,
-        await this.ordersFor(agent, chat),
+        orders,
+        files,
       );
       await this.loadHistory(key, chat);
       // Both ask a different service before the reply can start, so they run
@@ -465,6 +476,7 @@ export class ChatResponderService {
       const prompt = [
         agent.systemPrompt.trim(),
         toolbox?.takesOrders ? agent.orderInstructions.trim() : '',
+        toolbox?.filesPrompt ?? '',
         isGroupJid(chat.peerJid) ? GROUP_CHAT_NOTE : '',
         dateContext(new Date(), zoneForPhone(agent.phoneNumber?.phoneNumber)),
         knowledge,
@@ -507,23 +519,32 @@ export class ChatResponderService {
       // An order must never be placed in silence.
       const orderNumber = await toolbox?.placedOrderNumber();
       const reply =
-        generated ||
+        (toolbox?.withoutFileMarks(generated) ?? generated) ||
         (orderNumber ? `Your order #${orderNumber} is placed.` : '');
-      if (!reply) {
+      const sentFiles = toolbox?.sentFiles ?? [];
+      if (!reply && !sentFiles.length) {
         this.logger.warn(`chat agent ${agent.id} answered with no text`);
         return '';
       }
 
       await chat.setTyping(false).catch(() => undefined);
-      await chat.send(reply);
+      if (reply) await chat.send(reply);
       sent = true;
+      // The record says which files went out, or the agent would forget and
+      // send them again. The customer already has the files, not this line.
+      const record = [
+        ...sentFiles.map((name) => `${FILE_SENT_MARK} ${name}`),
+        reply,
+      ]
+        .filter(Boolean)
+        .join('\n');
       this.remember(key, { role: 'user', text: chat.text });
-      this.remember(key, { role: 'assistant', text: reply });
+      this.remember(key, { role: 'assistant', text: record });
       this.logger.log(`chat agent ${agent.id} replied to ${chat.peerJid}`);
       activity(
         `AI replied: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
       );
-      return reply;
+      return record;
     } catch (err) {
       this.logger.error(
         `chat agent ${agent.id} reply failed: ${(err as Error).message}`,
@@ -650,6 +671,30 @@ export class ChatResponderService {
           fields,
         ),
     };
+  }
+
+  // The files this agent can send in this chat. They live in their own database,
+  // so trouble there is logged and the agent answers without them.
+  private async filesFor(
+    agent: ReplyingAgent,
+    chat: IncomingChat,
+  ): Promise<ChatFile[]> {
+    try {
+      const files = await this.files.listForReply(agent.id);
+      return files.map((file, i) => ({
+        // Short keys, so the model has no long id to copy wrongly.
+        key: `file_${i + 1}`,
+        name: file.file_name,
+        description: file.description,
+        send: async () =>
+          chat.sendFile(await this.files.content(agent.id, file.id)),
+      }));
+    } catch (err) {
+      this.logger.error(
+        `chat agent ${agent.id} files lookup failed: ${(err as Error).message}`,
+      );
+      return [];
+    }
   }
 
   // Whether this message agrees to an order the agent has set out, which has

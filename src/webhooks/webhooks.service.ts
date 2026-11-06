@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { userSignedUp } from '../activity/activity';
+import { AgentFilesService } from '../agent-files/agent-files.service';
 import { createStarterAgent } from '../chat-agents/starter-agent';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -18,7 +19,10 @@ export type ClerkEvent = {
 export class WebhooksService {
   private readonly logger = new Logger(WebhooksService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly files: AgentFilesService,
+  ) {}
 
   // Mirrors the Go server's WebhookHandler.handleClerkEvent: created/updated
   // upsert the user by Clerk id, deleted removes it (its phone numbers and
@@ -58,10 +62,17 @@ export class WebhooksService {
         }
         return null;
       }
-      case 'user.deleted':
+      case 'user.deleted': {
         if (!user?.id) return 'webhook user id is required';
+        const gone = await this.prisma.user.findUnique({
+          where: { oauthId: user.id },
+          select: { id: true },
+        });
         await this.prisma.user.deleteMany({ where: { oauthId: user.id } });
+        // Their files are in the files database, out of the cascade's reach.
+        if (gone) await this.files.removeForUser(gone.id);
         return null;
+      }
       default:
         return null;
     }

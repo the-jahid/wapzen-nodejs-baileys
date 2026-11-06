@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { AgentFilesModule } from './agent-files/agent-files.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { BulkMessagesModule } from './bulk-messages/bulk-messages.module';
@@ -24,6 +25,7 @@ import { WhatsAppModule } from './whatsapp/whatsapp.module';
     ToolsModule,
     OrdersModule,
     BulkMessagesModule,
+    AgentFilesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

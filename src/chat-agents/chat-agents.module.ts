@@ -1,10 +1,11 @@
 import { Module } from '@nestjs/common';
+import { AgentFilesModule } from '../agent-files/agent-files.module';
 import { AuthModule } from '../auth/auth.module';
 import { ChatAgentsController } from './chat-agents.controller';
 import { ChatAgentsService } from './chat-agents.service';
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, AgentFilesModule],
   controllers: [ChatAgentsController],
   providers: [ChatAgentsService],
 })

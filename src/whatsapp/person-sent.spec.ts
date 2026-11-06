@@ -1,4 +1,5 @@
 import type { ConfigService } from '@nestjs/config';
+import type { AgentFilesService } from '../agent-files/agent-files.service';
 import type { IndexerService } from '../knowledge-bases/indexer.service';
 import type { OrdersService } from '../orders/orders.service';
 import type { PrismaService } from '../prisma/prisma.service';
@@ -38,6 +39,7 @@ function setup(chatAgent: { id: string; status: string } | null) {
     { get: jest.fn() } as unknown as ConfigService,
     {} as IndexerService,
     {} as OrdersService,
+    {} as AgentFilesService,
   );
   return { prisma, responder };
 }

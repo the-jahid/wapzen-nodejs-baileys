@@ -22,9 +22,38 @@ export type ToolDefinition = {
   function: {
     name: string;
     description: string;
-    parameters: ReturnType<typeof parameterSchema | typeof orderParameters>;
+    parameters:
+      | ReturnType<typeof parameterSchema | typeof orderParameters>
+      | ReturnType<typeof fileParameters>;
   };
 };
+
+export const SEND_FILE_FUNCTION = 'send_file';
+// Marks a file the agent sent, in the saved conversation and its history, so a
+// later reply knows it went out. The customer never sees this line.
+export const FILE_SENT_MARK = '📎';
+
+// One of the images or documents the owner uploaded for this agent. send
+// delivers it to the person in this chat.
+export type ChatFile = {
+  key: string;
+  name: string;
+  description: string;
+  send: () => Promise<unknown>;
+};
+
+const escapeRegExp = (text: string) =>
+  text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function fileParameters(files: ChatFile[]) {
+  return {
+    type: 'object' as const,
+    properties: {
+      file_id: { type: 'string', enum: files.map((file) => file.key) },
+    },
+    required: ['file_id'],
+  };
+}
 
 // What an agent with ordering switched on can do, for one reply.
 export type ChatOrders = {
@@ -44,24 +73,29 @@ export class ChatToolbox {
   private orderConfirmed = false;
   // What the order still lacks, as the confirmation check saw it.
   private orderMissing = '';
+  // The files sent in this reply, by name, once each however often it's asked.
+  private readonly filesSent = new Set<string>();
 
   private constructor(
     private readonly label: string,
     // Delivers a send_text tool's message to the person in this chat.
     private readonly send: (text: string) => Promise<unknown>,
     private readonly orders?: ChatOrders,
+    private readonly files: ChatFile[] = [],
   ) {}
 
   // The toolbox for one reply, or null when the agent has nothing it can do,
   // so callers never special-case an agent that only talks. Take Order joins
-  // only when orders is given, so with ordering off the model can't call it.
+  // only when orders is given, so with ordering off the model can't call it,
+  // and send_file only when the agent has files.
   static for(
     tools: Tool[],
     agentId: string,
     send: (text: string) => Promise<unknown>,
     orders?: ChatOrders,
+    files: ChatFile[] = [],
   ): ChatToolbox | null {
-    const box = new ChatToolbox(`chat agent ${agentId}`, send, orders);
+    const box = new ChatToolbox(`chat agent ${agentId}`, send, orders, files);
     for (const row of tools) {
       const tool = resolve(row);
       if (tool.type === 'order') {
@@ -83,7 +117,48 @@ export class ChatToolbox {
       }
       box.byName.set(tool.name, tool);
     }
-    return box.byName.size ? box : null;
+    // An owner's tool may have this name; with files to send, this one wins it.
+    if (files.length) box.byName.delete(SEND_FILE_FUNCTION);
+    return box.byName.size || files.length ? box : null;
+  }
+
+  // The files sent in this reply, by name.
+  get sentFiles() {
+    return [...this.filesSent];
+  }
+
+  // What the agent can send and when, for its prompt. It can't go in the
+  // function's description: OpenAI caps that at 1,024 characters and refuses the
+  // whole request past it.
+  get filesPrompt() {
+    if (!this.files.length) return '';
+    return [
+      `You can send the person these files with the ${SEND_FILE_FUNCTION} function. Each line gives the file_id, the file's name, and when to send it:`,
+      ...this.files.map(
+        (file) => `- ${file.key} (${file.name}): ${file.description}`,
+      ),
+      `Judge only the person's latest message. If it asks for what a file's "when" describes, call ${SEND_FILE_FUNCTION} straight away and don't only say you will: there is no later moment. Otherwise don't call it: a question about a detail that might be inside a file is not a request for the file, so answer it in words, or say you don't know. The file arrives as its own message, so add a short line of text, and never say a file was sent unless the function confirmed it.`,
+      `A line starting with ${FILE_SENT_MARK} in your earlier messages records a file that already went out. Send that file again only if the latest message plainly asks for it again. Never write the ${FILE_SENT_MARK} sign yourself.`,
+    ].join('\n');
+  }
+
+  // The model sometimes copies the mark it sees in its history, in live tests as
+  // "📎 Here's our location" and "Here's the menu! 📎 menu.pdf". That is for the
+  // record only, so it never reaches the person.
+  withoutFileMarks(text: string) {
+    if (!text.includes(FILE_SENT_MARK)) return text;
+    const names = this.sentFiles.map(escapeRegExp).join('|');
+    return (
+      names
+        ? text.replace(
+            new RegExp(`${FILE_SENT_MARK}\\s*(?:${names})`, 'gu'),
+            '',
+          )
+        : text
+    )
+      .replaceAll(FILE_SENT_MARK, '')
+      .replace(/ {2,}/g, ' ')
+      .trim();
   }
 
   // Whether this reply can place an order.
@@ -103,17 +178,31 @@ export class ChatToolbox {
   // The stored name and description are passed through untouched: they are
   // prompt text, and the model decides whether to call a tool on them alone.
   definitions(): ToolDefinition[] {
-    return [...this.byName.values()].map((tool) => ({
-      type: 'function',
-      function: {
-        name: tool.name,
-        description: tool.description,
-        parameters:
-          tool.type === 'order'
-            ? orderParameters(this.phoneKnown, this.orderFields)
-            : parameterSchema(tool),
-      },
-    }));
+    const definitions: ToolDefinition[] = [...this.byName.values()].map(
+      (tool) => ({
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters:
+            tool.type === 'order'
+              ? orderParameters(this.phoneKnown, this.orderFields)
+              : parameterSchema(tool),
+        },
+      }),
+    );
+    if (this.files.length) {
+      definitions.push({
+        type: 'function',
+        function: {
+          name: SEND_FILE_FUNCTION,
+          description:
+            'Sends one of the files listed in your instructions to the person in this chat.',
+          parameters: fileParameters(this.files),
+        },
+      });
+    }
+    return definitions;
   }
 
   // Appended to the agent's prompt. A tool the prompt never mentions is
@@ -142,6 +231,9 @@ export class ChatToolbox {
   // It never throws: a failure is reported as text, so the agent can say it
   // couldn't do something instead of the reply dying silently.
   async run(name: string, args: Record<string, unknown>): Promise<string> {
+    if (name === SEND_FILE_FUNCTION && this.files.length) {
+      return this.sendFile(args ?? {});
+    }
     const tool = this.byName.get(name);
     if (!tool) return `Unknown tool "${name}".`;
     if (tool.type === 'api_request') {
@@ -192,6 +284,30 @@ export class ChatToolbox {
       return result;
     });
     return this.placed;
+  }
+
+  // The model can only choose from the agent's own files, by key. Marked sent
+  // before it goes out, so two calls at once still send it once.
+  private async sendFile(args: Record<string, unknown>) {
+    const file = this.files.find(
+      (candidate) => candidate.key === argumentToString(args.file_id).trim(),
+    );
+    if (!file) return 'There is no file with that file_id.';
+    if (this.filesSent.has(file.name)) {
+      return 'That file has already been sent, so do not send it again.';
+    }
+    this.filesSent.add(file.name);
+    try {
+      await file.send();
+    } catch (err) {
+      this.filesSent.delete(file.name);
+      logger.warn(
+        `${this.label} could not send a file: ${(err as Error).message}`,
+      );
+      return 'The file could not be sent. Tell them you could not send it right now.';
+    }
+    logger.log(`${this.label} sent a file on WhatsApp`);
+    return 'The file has been sent on WhatsApp as its own message.';
   }
 
   // Sends a link, an address or a reference as a WhatsApp message of its

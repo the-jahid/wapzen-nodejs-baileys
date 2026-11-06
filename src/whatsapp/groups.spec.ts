@@ -12,6 +12,7 @@ import { ChatConversationsService } from '../chat-conversations/chat-conversatio
 import { PrismaClient } from '../generated/prisma/client';
 import type { IndexerService } from '../knowledge-bases/indexer.service';
 import type { OrdersService } from '../orders/orders.service';
+import type { AgentFilesService } from '../agent-files/agent-files.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import { ChatResponderService } from './chat-responder.service';
 import { WhatsAppService } from './whatsapp.service';
@@ -266,6 +267,7 @@ beforeAll(async () => {
     { get: () => 'test-key' } as unknown as ConfigService,
     { enabled: false } as unknown as IndexerService,
     {} as unknown as OrdersService,
+    { listForReply: () => Promise.resolve([]) } as unknown as AgentFilesService,
   );
   whatsapp = new WhatsAppService(prisma as unknown as PrismaService, responder);
   waGroups = {

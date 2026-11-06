@@ -7343,6 +7343,272 @@
           }
         }
       }
+    },
+    "/v1/chat-agents/{chat_agent_id}/files": {
+      "get": {
+        "tags": [
+          "Chat Agents"
+        ],
+        "security": [
+          {
+            "apiKeyBearer": []
+          }
+        ],
+        "operationId": "listChatAgentFiles",
+        "summary": "List a chat agent's files",
+        "description": "The images and documents the agent can send, without their bytes.",
+        "parameters": [
+          {
+            "description": "Unique chat-agent identifier.",
+            "in": "path",
+            "name": "chat_agent_id",
+            "required": true,
+            "schema": {
+              "example": "chat_agent_12345",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The files, oldest first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "file_name": {
+                            "type": "string",
+                            "example": "menu.pdf"
+                          },
+                          "mime_type": {
+                            "type": "string",
+                            "example": "application/pdf"
+                          },
+                          "size_bytes": {
+                            "type": "integer",
+                            "example": 48213
+                          },
+                          "description": {
+                            "type": "string",
+                            "example": "When someone asks for the menu or the prices."
+                          },
+                          "created_at": {
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such chat agent on this account."
+          },
+          "503": {
+            "description": "File storage is not set up or cannot be reached."
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Chat Agents"
+        ],
+        "security": [
+          {
+            "apiKeyBearer": []
+          }
+        ],
+        "operationId": "uploadChatAgentFile",
+        "summary": "Upload an image or document for a chat agent to send",
+        "description": "The agent sends the file on WhatsApp when a message matches the description. Takes jpg, jpeg, png, webp, pdf, doc, docx, xls, xlsx, ppt, pptx, txt and csv, no video, up to 10 MB each and 20 per agent.",
+        "parameters": [
+          {
+            "description": "Unique chat-agent identifier.",
+            "in": "path",
+            "name": "chat_agent_id",
+            "required": true,
+            "schema": {
+              "example": "chat_agent_12345",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file",
+                  "description"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "description": {
+                    "type": "string",
+                    "maxLength": 300,
+                    "description": "When the agent should send this file."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The stored file.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "file_name": {
+                          "type": "string",
+                          "example": "menu.pdf"
+                        },
+                        "mime_type": {
+                          "type": "string",
+                          "example": "application/pdf"
+                        },
+                        "size_bytes": {
+                          "type": "integer",
+                          "example": 48213
+                        },
+                        "description": {
+                          "type": "string",
+                          "example": "When someone asks for the menu or the prices."
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing description, a type that is not taken, or a file over 10 MB."
+          },
+          "404": {
+            "description": "No such chat agent on this account."
+          },
+          "409": {
+            "description": "The agent already holds 20 files."
+          },
+          "503": {
+            "description": "File storage is not set up or cannot be reached."
+          }
+        }
+      }
+    },
+    "/v1/chat-agents/{chat_agent_id}/files/{file_id}": {
+      "delete": {
+        "tags": [
+          "Chat Agents"
+        ],
+        "security": [
+          {
+            "apiKeyBearer": []
+          }
+        ],
+        "operationId": "deleteChatAgentFile",
+        "summary": "Delete a chat agent's file",
+        "parameters": [
+          {
+            "description": "Unique chat-agent identifier.",
+            "in": "path",
+            "name": "chat_agent_id",
+            "required": true,
+            "schema": {
+              "example": "chat_agent_12345",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unique file identifier.",
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file is gone.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "deleted": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such chat agent or file on this account."
+          },
+          "503": {
+            "description": "File storage is not set up or cannot be reached."
+          }
+        }
+      }
     }
   },
   "servers": [

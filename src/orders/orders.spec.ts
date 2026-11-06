@@ -4,6 +4,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import { HttpException } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
+import type { AgentFilesService } from '../agent-files/agent-files.service';
 import { ChatAgentsService } from '../chat-agents/chat-agents.service';
 import { PrismaClient } from '../generated/prisma/client';
 import { ToolsController } from '../tools/tools.controller';
@@ -638,7 +639,10 @@ describe('order_enabled', () => {
   });
 
   it('reports orders_on only with the toggle on and the tool attached', async () => {
-    const agents = new ChatAgentsService(prisma as unknown as PrismaService);
+    const agents = new ChatAgentsService(
+      prisma as unknown as PrismaService,
+      { removeForAgent: () => Promise.resolve() } as unknown as AgentFilesService,
+    );
     const { user, agent } = await newAccount('agentapi');
     const tool = await prisma.tool.findFirstOrThrow({
       where: { userId: user.id, key: 'take_order' },
@@ -671,7 +675,10 @@ describe('order_enabled', () => {
   });
 
   it('turns ordering on when Take Order is attached, and lets it be turned off', async () => {
-    const agents = new ChatAgentsService(prisma as unknown as PrismaService);
+    const agents = new ChatAgentsService(
+      prisma as unknown as PrismaService,
+      { removeForAgent: () => Promise.resolve() } as unknown as AgentFilesService,
+    );
     const { user, agent } = await newAccount('attachon');
     const tool = await prisma.tool.findFirstOrThrow({
       where: { userId: user.id, key: 'take_order' },
