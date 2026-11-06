@@ -100,8 +100,8 @@ export class ChatAgentsService {
             (await includesTakeOrder(tx, toolIds)) ||
             (req.order?.order_enabled ?? false),
           orderInstructions: cleanText(req.order?.order_instructions ?? ''),
-          voiceMessagesEnabled: req.media?.voice_messages_enabled ?? false,
-          imagesEnabled: req.media?.images_enabled ?? false,
+          voiceMessagesEnabled: req.media?.voice_messages_enabled ?? true,
+          imagesEnabled: req.media?.images_enabled ?? true,
           knowledgeBases: { create: knowledgeBaseRows(knowledgeBaseIds) },
           tools: { create: attachmentRows(toolIds) },
         },

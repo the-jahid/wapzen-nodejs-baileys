@@ -60,8 +60,8 @@ model ChatAgent {
   // Whether the agent answers voice messages (transcribed to text first) and
   // reads the photos people send. Off: voice messages go unanswered and a
   // photo is answered by its caption alone, as before these existed.
-  voiceMessagesEnabled Boolean @default(false) @map("voice_messages_enabled")
-  imagesEnabled        Boolean @default(false) @map("images_enabled")
+  voiceMessagesEnabled Boolean @default(true) @map("voice_messages_enabled")
+  imagesEnabled        Boolean @default(true) @map("images_enabled")
   // Unused: the human handover switch was removed the day it shipped
   // (2026-11-03). Kept so instances still running that code don't fail
   // mid-deploy; safe to drop in a later migration.
