@@ -3,8 +3,18 @@ import { join } from 'node:path';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { OpenAPIObject, SwaggerModule } from '@nestjs/swagger';
+import { activity } from './activity/activity';
 import { AppModule } from './app.module';
 import { applyMigrations } from './migrate';
+
+// Node ends the process on a rejected promise nobody caught. One stray rejection
+// from a socket would drop every number and the whole API until the host restarts
+// it, and the dashboard would say it could not reach the server.
+process.on('unhandledRejection', (reason) => {
+  const detail =
+    reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  activity(`unhandled rejection: ${detail}`);
+});
 
 // libsignal (under Baileys) prints whole sessions straight to the console,
 // private keys included, and no logger setting reaches it. Nest and the
