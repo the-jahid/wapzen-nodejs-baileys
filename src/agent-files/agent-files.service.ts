@@ -165,6 +165,23 @@ export class AgentFilesService implements OnModuleDestroy {
     return rows[0];
   }
 
+  // The file with its new note, or undefined when it isn't this agent's.
+  async updateDescription(
+    agentId: string,
+    id: string,
+    description: string,
+  ): Promise<AgentFile | undefined> {
+    const db = await this.db();
+    const { rows } = await db.query<AgentFile>(
+      `UPDATE agent_files SET description = $1
+        WHERE id = $2 AND chat_agent_id = $3
+        RETURNING ${LIST_COLUMNS}`,
+      [description, id, agentId],
+    );
+    this.listed.delete(agentId);
+    return rows[0];
+  }
+
   // Whether the file was there to remove.
   async remove(agentId: string, id: string) {
     const db = await this.db();

@@ -175,6 +175,44 @@ describe('the files routes', () => {
     await upload('one-more.pdf', PDF).expect(409);
   });
 
+  it('changes a file’s note and leaves the file alone', async () => {
+    const res = await upload('a.png', PNG).expect(201);
+    const { id } = (res.body as { data: { id: string } }).data;
+    const edited = await http()
+      .patch(`${url}/${id}`)
+      .send({ description: '  when asked\n for   a photo ' })
+      .expect(200);
+    expect((edited.body as { data: unknown }).data).toMatchObject({
+      id,
+      file_name: 'a.png',
+      description: 'when asked for a photo',
+    });
+    expect((await files.list(MINE))[0].description).toBe(
+      'when asked for a photo',
+    );
+    const stored = await files.content(MINE, id);
+    expect(Buffer.compare(stored.data, PNG)).toBe(0);
+  });
+
+  it('refuses a bad note and keeps the old one', async () => {
+    const res = await upload('a.pdf', PDF).expect(201);
+    const { id } = (res.body as { data: { id: string } }).data;
+    const edit = (body: object) => http().patch(`${url}/${id}`).send(body);
+    await edit({ description: '   ' }).expect(400);
+    await edit({}).expect(400);
+    await edit({ description: 7 }).expect(400);
+    await edit({ description: 'x'.repeat(301) }).expect(400);
+    await http().patch(`${url}/${id}`).expect(400);
+    expect((await files.list(MINE))[0].description).toBe(NOTE);
+  });
+
+  it('answers 404 for a note on a file that isn’t there', async () => {
+    await http()
+      .patch(`${url}/no-such-file`)
+      .send({ description: NOTE })
+      .expect(404);
+  });
+
   it('deletes a file, once', async () => {
     const res = await upload('a.pdf', PDF).expect(201);
     const { id } = (res.body as { data: { id: string } }).data;
@@ -189,6 +227,10 @@ describe('the files routes', () => {
       .post(other)
       .field('description', NOTE)
       .attach('file', PDF, 'a.pdf')
+      .expect(404);
+    await http()
+      .patch(`${other}/some-file`)
+      .send({ description: NOTE })
       .expect(404);
     await http().delete(`${other}/some-file`).expect(404);
   });

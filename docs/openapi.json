@@ -7539,6 +7539,74 @@
       }
     },
     "/v1/chat-agents/{chat_agent_id}/files/{file_id}": {
+      "patch": {
+        "tags": [
+          "Chat Agents"
+        ],
+        "security": [
+          {
+            "apiKeyBearer": []
+          }
+        ],
+        "operationId": "updateChatAgentFile",
+        "summary": "Change a file's note",
+        "description": "Changes when the agent should send this file. The file itself can't be changed: upload a new one.",
+        "parameters": [
+          {
+            "description": "Unique chat-agent identifier.",
+            "in": "path",
+            "name": "chat_agent_id",
+            "required": true,
+            "schema": {
+              "example": "chat_agent_12345",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unique file identifier.",
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "description"
+                ],
+                "properties": {
+                  "description": {
+                    "description": "When the agent should send this file, at most 300 characters.",
+                    "type": "string",
+                    "maxLength": 300
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The file with its new note."
+          },
+          "400": {
+            "description": "The note is missing or too long."
+          },
+          "404": {
+            "description": "No such chat agent or file on this account."
+          },
+          "503": {
+            "description": "File storage is not set up or cannot be reached."
+          }
+        }
+      },
       "delete": {
         "tags": [
           "Chat Agents"

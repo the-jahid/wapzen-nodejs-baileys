@@ -118,6 +118,24 @@ describe('the files database', () => {
     expect(await files.listForReply('agent-c')).toEqual([]);
   });
 
+  it('shows a reply an edited note straight away, and only on that agent', async () => {
+    const added = await add('agent-note');
+    await files.listForReply('agent-note');
+    const edited = await files.updateDescription(
+      'agent-note',
+      added.id,
+      'a new note',
+    );
+    expect(edited?.description).toBe('a new note');
+    expect((await files.listForReply('agent-note'))[0].description).toBe(
+      'a new note',
+    );
+    expect(
+      await files.updateDescription('agent-other', added.id, 'taken over'),
+    ).toBeUndefined();
+    expect((await files.list('agent-note'))[0].description).toBe('a new note');
+  });
+
   it('removes an agent’s files, and a user’s, and no one else’s', async () => {
     await add('agent-d', 'user-d');
     await add('agent-e', 'user-e');

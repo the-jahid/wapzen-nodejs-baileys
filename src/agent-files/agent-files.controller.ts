@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
@@ -7,6 +8,7 @@ import {
   HttpStatus,
   Logger,
   Param,
+  Patch,
   Post,
   Req,
   Res,
@@ -90,22 +92,7 @@ export class AgentFilesController {
         'attach the file in a "file" part',
       );
     }
-    const description =
-      typeof body.description === 'string'
-        ? body.description.replace(/\s+/g, ' ').trim()
-        : '';
-    if (!description) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        'say when the agent should send this file',
-      );
-    }
-    if (Array.from(description).length > MAX_DESCRIPTION_CHARS) {
-      throw apiError(
-        HttpStatus.BAD_REQUEST,
-        `the description must be at most ${MAX_DESCRIPTION_CHARS} characters`,
-      );
-    }
+    const description = cleanDescription(body.description);
     const fileName = cleanFileName(file.originalname);
     const mimeType = detectMimeType(fileName, file.buffer);
     if (!mimeType) {
@@ -135,6 +122,27 @@ export class AgentFilesController {
       success: true,
       message: 'File uploaded successfully',
       data: added,
+    };
+  }
+
+  // Only the note can change. A different file is a new upload.
+  @Patch(':file_id')
+  async update(
+    @CurrentUser() user: User,
+    @Param('chat_agent_id') id: string,
+    @Param('file_id') fileId: string,
+    @Body() body: { description?: unknown } | undefined,
+  ) {
+    const agentId = await this.ownedAgent(user, id);
+    const description = cleanDescription(body?.description);
+    const updated = await this.available(() =>
+      this.files.updateDescription(agentId, fileId.trim(), description),
+    );
+    if (!updated) throw apiError(HttpStatus.NOT_FOUND, 'file not found');
+    return {
+      success: true,
+      message: 'File updated successfully',
+      data: updated,
     };
   }
 
@@ -189,6 +197,24 @@ export class AgentFilesController {
       );
     }
   }
+}
+
+function cleanDescription(raw: unknown) {
+  const description =
+    typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : '';
+  if (!description) {
+    throw apiError(
+      HttpStatus.BAD_REQUEST,
+      'say when the agent should send this file',
+    );
+  }
+  if (Array.from(description).length > MAX_DESCRIPTION_CHARS) {
+    throw apiError(
+      HttpStatus.BAD_REQUEST,
+      `the description must be at most ${MAX_DESCRIPTION_CHARS} characters`,
+    );
+  }
+  return description;
 }
 
 function uploadError(err: unknown) {
