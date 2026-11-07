@@ -56,11 +56,29 @@ export class ChatConversationsService {
     return { total, conversations: resolved.map((row) => toResource(row)) };
   }
 
-  // One thread with its whole transcript.
-  async get(userId: string, id: string) {
+  // A short text that changes whenever a listing with this filter would: a new
+  // message, a thread changed, added or deleted. A page that re-reads its list on
+  // a timer asks this first, and leaves the list alone while it stays the same.
+  async version(userId: string, filter: ConversationFilter) {
+    const { _count, _max } = await this.prisma.chatConversation.aggregate({
+      where: whereFor(userId, filter),
+      _count: true,
+      _max: { updatedAt: true },
+    });
+    return `${_count}:${_max.updatedAt?.getTime() ?? 0}`;
+  }
+
+  // One thread with its whole transcript, or only the messages after afterSeq
+  // for a page that already has the earlier ones.
+  async get(userId: string, id: string, afterSeq?: number) {
     const row = await this.prisma.chatConversation.findFirst({
       where: { id, userId },
-      include: { messages: { orderBy: { seq: 'asc' } } },
+      include: {
+        messages: {
+          where: afterSeq === undefined ? undefined : { seq: { gt: afterSeq } },
+          orderBy: { seq: 'asc' },
+        },
+      },
     });
     if (!row) throw notFound();
     const [resolved] = await resolvePeerPhones(this.prisma, [row]);

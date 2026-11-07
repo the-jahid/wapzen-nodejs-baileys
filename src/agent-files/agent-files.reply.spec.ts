@@ -9,6 +9,7 @@ import {
   type IncomingChat,
 } from '../whatsapp/chat-responder.service';
 import type { AgentFilesService } from './agent-files.service';
+import type { OutgoingFile } from './agent-files.types';
 
 // A whole reply with the model scripted: what the person receives, and what the
 // thread and the agent's memory keep.
@@ -135,10 +136,18 @@ describe('an agent sending a file', () => {
     script.text = '📎 Here is our menu!';
     await answer();
 
-    expect(files.content).toHaveBeenCalledWith('agent-1', 'row-1');
     expect(sendFile).toHaveBeenCalledWith(
-      expect.objectContaining({ fileName: 'menu.pdf', data: BYTES }),
+      expect.objectContaining({
+        id: 'row-1',
+        fileName: 'menu.pdf',
+        mimeType: 'application/pdf',
+      }),
     );
+    // The bytes are only read if the send asks for them.
+    expect(files.content).not.toHaveBeenCalled();
+    const [file] = (sendFile.mock.calls as unknown as [OutgoingFile][])[0];
+    expect(await file.load()).toBe(BYTES);
+    expect(files.content).toHaveBeenCalledWith('agent-1', 'row-1');
     expect(send).toHaveBeenCalledWith('Here is our menu!');
     expect(recordChatTurn).toHaveBeenCalledWith(
       expect.anything(),

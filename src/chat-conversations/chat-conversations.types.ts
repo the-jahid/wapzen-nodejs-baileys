@@ -154,6 +154,24 @@ export function parseListQuery(q: Record<string, string | undefined>) {
   return { page, limit, filter };
 }
 
+// The largest value the seq column can hold.
+const MAX_SEQ = 2_147_483_647;
+
+// ?after_seq=N on a thread: only the messages after that one, for a page that
+// already has the rest. Left out, the whole transcript comes back.
+export function parseAfterSeq(raw?: string) {
+  const value = raw?.trim();
+  if (!value) return undefined;
+  const seq = Number(value);
+  if (!Number.isInteger(seq) || seq < 0 || seq > MAX_SEQ) {
+    throw apiError(
+      HttpStatus.BAD_REQUEST,
+      'after_seq must be a non-negative integer',
+    );
+  }
+  return seq;
+}
+
 const UPDATE_FIELDS = ['status', 'ai_reply_enabled', 'needs_attention'];
 
 // The PATCH body: status and the AI switch may change, at least one of them;

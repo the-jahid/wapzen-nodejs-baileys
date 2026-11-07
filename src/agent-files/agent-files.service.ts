@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Client, Pool } from 'pg';
-import type { AgentFile, OutgoingFile } from './agent-files.types';
+import type { AgentFile } from './agent-files.types';
 
 // Uploads are few and the database is far away, so a small pool is plenty.
 const POOL_SIZE = 3;
@@ -193,7 +193,7 @@ export class AgentFilesService implements OnModuleDestroy {
     return !!rowCount;
   }
 
-  async content(agentId: string, id: string): Promise<OutgoingFile> {
+  async content(agentId: string, id: string) {
     const db = await this.db();
     const { rows } = await db.query<{
       file_name: string;

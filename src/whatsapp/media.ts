@@ -64,6 +64,34 @@ export async function transcribe(
   return text?.trim() ?? '';
 }
 
+// A photo over this size is usually an HD one. OpenAI's vision models have scaled
+// images to fit this many pixels before reading them, so this keeps that detail.
+const SHRINK_PHOTOS_OVER_BYTES = 500 * 1024;
+const MODEL_IMAGE_SIDE = 2048;
+
+// A large JPEG resized to what the model will read, so a few megabytes don't go
+// up for nothing. Anything else, or any trouble resizing, keeps the original.
+export async function smallerPhoto(image: Buffer, mimetype: string) {
+  if (image.length <= SHRINK_PHOTOS_OVER_BYTES) return image;
+  if (baseType(mimetype) !== 'image/jpeg') return image;
+  try {
+    const { default: sharp } = await import('sharp');
+    const smaller = await sharp(image)
+      .rotate()
+      .resize({
+        width: MODEL_IMAGE_SIDE,
+        height: MODEL_IMAGE_SIDE,
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality: 85 })
+      .toBuffer();
+    return smaller.length < image.length ? smaller : image;
+  } catch {
+    return image;
+  }
+}
+
 // A photo as the data URL the model reads, or undefined for a format it
 // doesn't take.
 export function imageDataUrl(image: Buffer, mimetype: string) {

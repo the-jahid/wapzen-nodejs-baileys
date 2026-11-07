@@ -16,6 +16,7 @@ import { ClerkAuthGuard, CurrentUser } from '../auth/auth.guard';
 import { ChatConversationsService } from './chat-conversations.service';
 import {
   ConversationFilter,
+  parseAfterSeq,
   parseListQuery,
   parseSend,
   parseUpdate,
@@ -64,12 +65,36 @@ export class ChatConversationsController {
     );
   }
 
+  // Whether a listing has changed, so the dashboard's inbox doesn't download
+  // its rows again to find out. Declared before the route below, which would
+  // otherwise read "version" as a thread id.
+  @Get('v1/dashboard/chat-conversations/version')
+  async version(
+    @CurrentUser() user: User,
+    @Query() query: Record<string, string | undefined>,
+  ) {
+    const { filter } = parseListQuery(query);
+    return {
+      success: true,
+      message: 'Conversations version retrieved successfully',
+      data: { version: await this.conversations.version(user.id, filter) },
+    };
+  }
+
   @Get([
     'v1/chat-conversations/:conversation_id',
     'v1/dashboard/chat-conversations/:conversation_id',
   ])
-  async get(@CurrentUser() user: User, @Param('conversation_id') id: string) {
-    const data = await this.conversations.get(user.id, id.trim());
+  async get(
+    @CurrentUser() user: User,
+    @Param('conversation_id') id: string,
+    @Query('after_seq') afterSeq?: string,
+  ) {
+    const data = await this.conversations.get(
+      user.id,
+      id.trim(),
+      parseAfterSeq(afterSeq),
+    );
     return {
       success: true,
       message: 'Conversation retrieved successfully',

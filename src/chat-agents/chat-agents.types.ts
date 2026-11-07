@@ -133,7 +133,17 @@ export function toResource(
   };
 }
 
-function hourlyLimit(row: ChatAgent) {
+// What the dashboard re-reads about an agent while it's on screen, without the
+// prompt and everything else it already has.
+export function toLiveState(
+  row: Pick<ChatAgent, 'id' | 'hourlyReplyCount' | 'hourlyWindowStartedAt'>,
+) {
+  return { id: row.id, ...hourlyLimit(row) };
+}
+
+function hourlyLimit(
+  row: Pick<ChatAgent, 'hourlyReplyCount' | 'hourlyWindowStartedAt'>,
+) {
   if (row.hourlyReplyCount < HOURLY_REPLY_LIMIT) return {};
   const resetsAt = (row.hourlyWindowStartedAt?.getTime() ?? 0) + HOUR_MS;
   if (resetsAt <= Date.now()) return {};

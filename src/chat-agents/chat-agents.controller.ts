@@ -71,6 +71,17 @@ export class ChatAgentsController {
     };
   }
 
+  // What changes on its own while an agent runs. The dashboard re-reads this on
+  // a timer. Declared before the route below, which would read "live" as an id.
+  @Get('live')
+  async live(@CurrentUser() user: User) {
+    return {
+      success: true,
+      message: 'Chat agent states retrieved successfully',
+      data: await this.chatAgents.liveStates(user.id),
+    };
+  }
+
   @Get(':chat_agent_id')
   async get(@CurrentUser() user: User, @Param('chat_agent_id') id: string) {
     return {

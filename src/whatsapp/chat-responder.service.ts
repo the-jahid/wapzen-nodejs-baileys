@@ -41,6 +41,7 @@ import {
   MAX_IMAGE_BYTES,
   MAX_VOICE_BYTES,
   MAX_VOICE_SECONDS,
+  smallerPhoto,
   transcribe,
 } from './media';
 import {
@@ -339,7 +340,10 @@ export class ChatResponderService {
 
     if (!agent.imagesEnabled || media.bytes > MAX_IMAGE_BYTES) return plain;
     try {
-      const image = imageDataUrl(await media.download(), media.mimetype);
+      const image = imageDataUrl(
+        await smallerPhoto(await media.download(), media.mimetype),
+        media.mimetype,
+      );
       if (!image) return plain;
       return {
         ...chat,
@@ -686,8 +690,14 @@ export class ChatResponderService {
         key: `file_${i + 1}`,
         name: file.file_name,
         description: file.description,
-        send: async () =>
-          chat.sendFile(await this.files.content(agent.id, file.id)),
+        send: () =>
+          chat.sendFile({
+            id: file.id,
+            fileName: file.file_name,
+            mimeType: file.mime_type,
+            load: async () =>
+              (await this.files.content(agent.id, file.id)).data,
+          }),
       }));
     } catch (err) {
       this.logger.error(

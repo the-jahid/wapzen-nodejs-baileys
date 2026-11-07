@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   HttpStatus,
   Injectable,
@@ -12,6 +13,8 @@ import makeWASocket, {
   DisconnectReason,
   downloadMediaMessage,
   fetchLatestWaWebVersion,
+  generateMessageIDV2,
+  generateWAMessageFromContent,
   getBinaryNodeChild,
   isJidBroadcast,
   isJidGroup,
@@ -119,6 +122,12 @@ const GROUP_LIST_TTL_MS = 30_000;
 const MAX_QUOTE_CHARS = 500;
 // The name of someone in a group who has none set in WhatsApp.
 const UNNAMED_SENDER = 'Someone';
+// How long a file that went out once is sent again from the copy already on
+// WhatsApp's servers. WhatsApp doesn't say how long it keeps media, so this stays
+// far shorter than anyone has reported it being gone after.
+const UPLOAD_REUSE_MS = 6 * 60 * 60_000;
+// Uploads remembered at once. Each is a short message, not the file itself.
+const UPLOAD_CACHE_SIZE = 500;
 
 export class NumberNotConnectedError extends Error {
   constructor() {
@@ -157,6 +166,12 @@ export class WhatsAppService
   // number's row; the dashboard keeps polling the login's id, so it's mapped.
   private readonly relinked = new Map<string, string>();
   private readonly traces = new WeakMap<WASocket, DeviceTrace>();
+  // What the last upload of each file came back as, by number and file: see
+  // sendFileFrom.
+  private readonly uploads = new RecentCache<{
+    at: number;
+    message: Uint8Array;
+  }>(UPLOAD_CACHE_SIZE);
   // The groups the AI is on in, by row id. Read for every stanza a socket gets,
   // so it has to be in memory; ai_groups is what fills it.
   private readonly aiGroups = new Map<string, Set<string>>();
@@ -513,19 +528,61 @@ export class WhatsAppService
     return sock.sendMessage(jid, { text });
   }
 
-  private sendFileFrom(sock: WASocket, jid: string, file: OutgoingFile) {
+  // The first send of a file uploads it. For a while after that, whoever asks
+  // next gets a message pointing at that upload, so the file is neither read from
+  // its database nor uploaded again. Each person's message is still encrypted for
+  // them; only the file, which has its own key, is shared, as a forward does.
+  private async sendFileFrom(
+    id: string,
+    sock: WASocket,
+    jid: string,
+    file: OutgoingFile,
+  ) {
     const trace = this.traces.get(sock);
     if (trace) trace.sentAt = Date.now();
-    return sock.sendMessage(
+
+    const key = `${id}|${file.id}`;
+    const upload = this.uploads.get(key);
+    if (upload && Date.now() - upload.at < UPLOAD_REUSE_MS) {
+      const content = proto.Message.decode(upload.message);
+      // Every message has a secret of its own, which Baileys makes for a new one.
+      if (content.messageContextInfo?.messageSecret) {
+        content.messageContextInfo.messageSecret = randomBytes(32);
+      }
+      const message = generateWAMessageFromContent(jid, content, {
+        userJid: sock.user!.id,
+        messageId: generateMessageIDV2(sock.user?.id),
+      });
+      try {
+        await sock.relayMessage(jid, message.message!, {
+          messageId: message.key.id!,
+        });
+      } catch (err) {
+        // The next try uploads it afresh, whatever went wrong here.
+        this.uploads.delete(key);
+        throw err;
+      }
+      return message;
+    }
+
+    const data = await file.load();
+    const sent = await sock.sendMessage(
       jid,
       sendsAsPhoto(file.mimeType)
-        ? { image: file.data, mimetype: file.mimeType }
+        ? { image: data, mimetype: file.mimeType }
         : {
-            document: file.data,
+            document: data,
             mimetype: file.mimeType,
             fileName: file.fileName,
           },
     );
+    if (sent?.message) {
+      this.uploads.set(key, {
+        at: Date.now(),
+        message: proto.Message.encode(sent.message).finish(),
+      });
+    }
+    return sent;
   }
 
   // unlink for a request: a WhatsApp that can't be reached is a 502, and the
@@ -1002,7 +1059,7 @@ export class WhatsAppService
         text,
         media,
         send: (reply) => this.sendFrom(sock, jid, reply),
-        sendFile: (file) => this.sendFileFrom(sock, jid, file),
+        sendFile: (file) => this.sendFileFrom(id, sock, jid, file),
         setTyping: (typing) =>
           sock.sendPresenceUpdate(typing ? 'composing' : 'paused', jid),
       })
@@ -1052,7 +1109,7 @@ export class WhatsAppService
         text,
         media,
         send: (reply) => this.sendFrom(sock, jid, reply),
-        sendFile: (file) => this.sendFileFrom(sock, jid, file),
+        sendFile: (file) => this.sendFileFrom(id, sock, jid, file),
         setTyping: (typing) =>
           sock.sendPresenceUpdate(typing ? 'composing' : 'paused', jid),
       })
@@ -1421,6 +1478,10 @@ class RecentCache<V> {
       this.entries.delete(oldest);
     }
     return this;
+  }
+
+  delete(key: string) {
+    this.entries.delete(key);
   }
 
   clear() {

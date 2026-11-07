@@ -17,6 +17,7 @@ import {
   normalizeNullable,
   PHONE_NUMBER_REQUIRED,
   resourceInclude,
+  toLiveState,
   toResource,
 } from './chat-agents.types';
 
@@ -47,6 +48,18 @@ export class ChatAgentsService {
       }),
     ]);
     return { total, agents: rows.map(toResource) };
+  }
+
+  async liveStates(userId: string) {
+    const rows = await this.prisma.chatAgent.findMany({
+      where: { userId },
+      select: {
+        id: true,
+        hourlyReplyCount: true,
+        hourlyWindowStartedAt: true,
+      },
+    });
+    return rows.map(toLiveState);
   }
 
   async get(userId: string, id: string): Promise<ChatAgentResource> {

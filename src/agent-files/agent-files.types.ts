@@ -15,11 +15,13 @@ export type AgentFile = {
   created_at: string;
 };
 
-// A file on its way to a customer.
+// A file on its way to a customer. Its bytes are read only if they have to be
+// uploaded: WhatsAppService.sendFileFrom reuses a recent upload.
 export type OutgoingFile = {
+  id: string;
   fileName: string;
   mimeType: string;
-  data: Buffer;
+  load: () => Promise<Buffer>;
 };
 
 const startsWith = (data: Buffer, ...bytes: number[]) =>
