@@ -8,6 +8,7 @@ import { AIMessage } from '@langchain/core/messages';
 import type { BaseMessage } from '@langchain/core/messages';
 import { PrismaPg } from '@prisma/adapter-pg';
 import type { ConfigService } from '@nestjs/config';
+import { toResource } from '../chat-agents/chat-agents.types';
 import { ChatConversationsService } from '../chat-conversations/chat-conversations.service';
 import { PrismaClient } from '../generated/prisma/client';
 import type { IndexerService } from '../knowledge-bases/indexer.service';
@@ -555,6 +556,50 @@ describe('messages in a group', () => {
     expect(agent.groupHourlyWindowStartedAt).toBeNull();
   });
 
+  it('sends the 50th private reply, then pauses with a timer until the hour is up', async () => {
+    const { id, sock } = await linkedNumber();
+    const contact = '8801711111111@s.whatsapp.net';
+    await prisma.$executeRaw`
+      UPDATE chat_agents SET
+        hourly_reply_count = 49, hourly_window_started_at = now()
+      WHERE phone_number_id = ${id}`;
+    const resource = async () =>
+      toResource({ ...(await agentOn(id)), knowledgeBases: [], tools: [] });
+    expect((await resource()).hourly_limit_resets_at).toBeUndefined();
+
+    incoming(sock, contact, { conversation: 'number 50' });
+    await repliesOn(sock);
+    const atLimit = await agentOn(id);
+    expect(atLimit.hourlyReplyCount).toBe(50);
+    expect(atLimit.status).toBe('active');
+    expect((await resource()).hourly_limit_resets_at).toBe(
+      new Date(
+        atLimit.hourlyWindowStartedAt!.getTime() + 60 * 60 * 1000,
+      ).toISOString(),
+    );
+
+    incoming(sock, contact, { conversation: 'number 51' });
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    expect(sock.sent).toHaveLength(1);
+    expect((await agentOn(id)).hourlyReplyCount).toBe(50);
+
+    await prisma.$executeRaw`
+      UPDATE chat_agents SET hourly_window_started_at = now() - interval '61 minutes'
+      WHERE phone_number_id = ${id}`;
+    // A JS date here: the row reads back shifted when PGlite's zone isn't UTC.
+    expect(
+      toResource({
+        ...(await agentOn(id)),
+        hourlyWindowStartedAt: new Date(Date.now() - 61 * 60 * 1000),
+        knowledgeBases: [],
+        tools: [],
+      }).hourly_limit_resets_at,
+    ).toBeUndefined();
+    incoming(sock, contact, { conversation: 'back on' });
+    await repliesOn(sock, 2);
+    expect((await agentOn(id)).hourlyReplyCount).toBe(1);
+  });
+
   it('stops at 50 replies an hour across all groups, keeping the messages', async () => {
     const { userId, id, sock } = await linkedNumber();
     await whatsapp.setGroupAi(userId, id, GROUP, true);
@@ -613,7 +658,7 @@ describe('messages in a group', () => {
     await whatsapp.setGroupAi(userId, id, GROUP, true);
     await prisma.$executeRaw`
       UPDATE chat_agents SET
-        hourly_reply_count = 100, hourly_window_started_at = now()
+        hourly_reply_count = 50, hourly_window_started_at = now()
       WHERE phone_number_id = ${id}`;
     incoming(sock, GROUP, tagged('@8801700000000 hi'));
     await new Promise((resolve) => setTimeout(resolve, 3_000));

@@ -22,12 +22,14 @@ export const MAX_CHAT_AGENTS_PER_USER = 1;
 // Each agent answers at most this many messages an hour. The hour starts with
 // the first reply once the previous one is over; at the limit the agent stays
 // quiet (messages are still saved) and answers again when the hour is up. Its
-// status isn't touched, so nothing has to switch it back on. The dashboard
-// only hears of it while it is reached (hourly_limit_resets_at).
-export const HOURLY_REPLY_LIMIT = 100;
-// Of those, at most this many in groups, across all the agent's groups, with an
-// hour of its own. At this limit the agent goes quiet in groups only and keeps
-// answering private chats, so the dashboard isn't told it has stopped.
+// stored status isn't touched, so nothing has to switch it back on, and the
+// owner's own pause isn't confused with it. While the limit is reached the
+// dashboard shows the agent as paused with a timer (hourly_limit_resets_at).
+export const HOURLY_REPLY_LIMIT = 50;
+// Group replies count toward that limit too, and may use all of it. This one
+// has an hour of its own, so it can still run out after the overall hour has
+// restarted; the agent then goes quiet in groups only and keeps answering
+// private chats, so the dashboard isn't told it has stopped.
 export const GROUP_HOURLY_REPLY_LIMIT = 50;
 const HOUR_MS = 60 * 60 * 1000;
 
