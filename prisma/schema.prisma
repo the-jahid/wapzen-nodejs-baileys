@@ -20,6 +20,10 @@ model User {
   username     String?
   // An operator can block an account; setting this back to null unblocks it.
   blockedAt    DateTime? @map("blocked_at") @db.Timestamptz
+  // Until this time the account's agents skip the hourly AI reply limits
+  // (HOURLY_REPLY_LIMIT and GROUP_HOURLY_REPLY_LIMIT). Set by hand for a
+  // single account; null, or a time in the past, means the normal limits.
+  noReplyLimitUntil DateTime? @map("no_reply_limit_until") @db.Timestamptz
   // The last order number handed out, so a deleted order's number is never
   // reused. The first order is #1001.
   lastOrderNumber Int    @default(1000) @map("last_order_number")

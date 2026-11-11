@@ -101,7 +101,7 @@ type ReplyingAgent = ChatAgent & {
     knowledgeBase: { id: string; pineconeNamespace: string | null };
   }[];
   phoneNumber: { phoneNumber: string | null } | null;
-  user: { email: string };
+  user: { email: string; noReplyLimitUntil: Date | null };
 };
 
 export type IncomingChat = {
@@ -227,7 +227,7 @@ export class ChatResponderService {
             },
           },
           phoneNumber: { select: { phoneNumber: true } },
-          user: { select: { email: true } },
+          user: { select: { email: true, noReplyLimitUntil: true } },
         },
       }),
       // A person switched the AI off for this contact in the dashboard.
@@ -570,6 +570,8 @@ export class ChatResponderService {
   // takes one from the agent's group hour, in the same statement, so it's never
   // counted in one and refused by the other. False at either limit.
   private async claimReply(agent: ReplyingAgent, inGroup: boolean) {
+    // Not counted at all, so the dashboard never shows the agent paused.
+    if (noReplyLimit(agent)) return true;
     try {
       const [claimed] = await this.prisma.$queryRaw<
         { count: number; group_count: number }[]
@@ -627,6 +629,7 @@ export class ChatResponderService {
 
   // Hands back a reply claimed for a message that got no answer.
   private async releaseReply(agent: ReplyingAgent, inGroup: boolean) {
+    if (noReplyLimit(agent)) return;
     await this.prisma.chatAgent
       .updateMany({
         where: {
@@ -838,4 +841,12 @@ export class ChatResponderService {
       this.summaries.delete(oldest);
     }
   }
+}
+
+// Whether the agent's account is let off the hourly reply limits right now
+// (users.no_reply_limit_until, set by hand). Checked again on release, so a
+// reply that wasn't counted is never handed back.
+function noReplyLimit(agent: ReplyingAgent): boolean {
+  const until = agent.user.noReplyLimitUntil;
+  return until != null && until.getTime() > Date.now();
 }

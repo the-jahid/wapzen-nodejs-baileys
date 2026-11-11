@@ -666,6 +666,44 @@ describe('messages in a group', () => {
     expect((await agentOn(id)).groupHourlyReplyCount).toBe(0);
   });
 
+  it('ignores both limits while the account is let off them', async () => {
+    const { userId, id, sock } = await linkedNumber();
+    await whatsapp.setGroupAi(userId, id, GROUP, true);
+    await prisma.user.update({
+      where: { id: userId },
+      data: { noReplyLimitUntil: new Date(Date.now() + 24 * 60 * 60 * 1000) },
+    });
+    await prisma.$executeRaw`
+      UPDATE chat_agents SET
+        hourly_reply_count = 50, hourly_window_started_at = now(),
+        group_hourly_reply_count = 50, group_hourly_window_started_at = now()
+      WHERE phone_number_id = ${id}`;
+    incoming(sock, GROUP, tagged('@8801700000000 hi'));
+    await repliesOn(sock);
+    incoming(sock, '8801711111111@s.whatsapp.net', { conversation: 'hello' });
+    await repliesOn(sock, 2);
+    expect(sock.sent).toHaveLength(2);
+    // Not counted, so the counts never pass the limit.
+    const agent = await agentOn(id);
+    expect(agent.hourlyReplyCount).toBe(50);
+    expect(agent.groupHourlyReplyCount).toBe(50);
+  });
+
+  it('keeps the limits once the exemption has ended', async () => {
+    const { userId, id, sock } = await linkedNumber();
+    await prisma.user.update({
+      where: { id: userId },
+      data: { noReplyLimitUntil: new Date(Date.now() - 60 * 1000) },
+    });
+    await prisma.$executeRaw`
+      UPDATE chat_agents SET
+        hourly_reply_count = 50, hourly_window_started_at = now()
+      WHERE phone_number_id = ${id}`;
+    incoming(sock, '8801711111111@s.whatsapp.net', { conversation: 'hello' });
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    expect(sock.sent).toEqual([]);
+  });
+
   it('hands the reply back to both counts when none goes out', async () => {
     const { userId, id, sock } = await linkedNumber();
     await whatsapp.setGroupAi(userId, id, GROUP, true);
