@@ -119,6 +119,8 @@ export class ChatAgentsService {
           orderInstructions: cleanText(req.order?.order_instructions ?? ''),
           voiceMessagesEnabled: req.media?.voice_messages_enabled ?? true,
           imagesEnabled: req.media?.images_enabled ?? true,
+          websiteEnabled: req.website?.website_enabled ?? false,
+          websiteUrl: req.website?.website_url?.trim() ?? '',
           knowledgeBases: { create: knowledgeBaseRows(knowledgeBaseIds) },
           tools: { create: attachmentRows(toolIds) },
         },
@@ -191,6 +193,12 @@ export class ChatAgentsService {
       }
       if (req.media?.images_enabled !== undefined) {
         data.imagesEnabled = req.media.images_enabled;
+      }
+      if (req.website?.website_enabled !== undefined) {
+        data.websiteEnabled = req.website.website_enabled;
+      }
+      if (req.website?.website_url !== undefined) {
+        data.websiteUrl = req.website.website_url.trim();
       }
       // An id list replaces the attached set wholesale; leaving it out keeps
       // the set as it is.

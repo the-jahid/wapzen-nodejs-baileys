@@ -332,6 +332,24 @@ function timeoutOf(cfg: ApiRequestConfig) {
   );
 }
 
+// A plain GET behind the same internal-address guard and redirect handling,
+// for reading an owner's website. The body is cut at 1 MB. url is where the
+// redirects ended, which relative links on the page are resolved against.
+export async function guardedGet(
+  url: URL,
+  headers: Record<string, string>,
+  timeoutMs: number,
+): Promise<Response & { url: URL }> {
+  const deadline = AbortSignal.timeout(timeoutMs);
+  let current: Prepared = { method: 'GET', url, headers };
+  for (let hop = 0; ; hop++) {
+    const res = await sendOnce(current, deadline);
+    if (!('location' in res)) return { ...res, url: current.url };
+    if (hop >= MAX_REDIRECTS) throw new Error('too many redirects');
+    current = redirected(current, res.status, res.location);
+  }
+}
+
 // Sends the request, following up to MAX_REDIRECTS redirects. The timeout
 // covers the whole exchange, redirects included.
 async function send(prepared: Prepared, timeoutMs: number): Promise<Response> {

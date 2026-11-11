@@ -38,6 +38,10 @@ const HOUR_MS = 60 * 60 * 1000;
 export const MAX_SYSTEM_PROMPT_CHARS = 8000;
 // Sent with every reply too, while ordering is on.
 export const MAX_ORDER_INSTRUCTIONS_CHARS = 4000;
+// A website address is stored as typed: the dashboard saves while the owner is
+// still typing it, so only its length is checked here, and an address that
+// doesn't parse simply gives the agent no website to read.
+export const MAX_WEBSITE_URL_CHARS = 500;
 
 // The built-in Take Order tool (tools.key).
 const ORDER_TOOL_KEY = 'take_order';
@@ -55,6 +59,7 @@ export type ChatAgentInput = {
   tools?: { tool_ids?: string[] };
   order?: { order_enabled?: boolean; order_instructions?: string };
   media?: { voice_messages_enabled?: boolean; images_enabled?: boolean };
+  website?: { website_enabled?: boolean; website_url?: string };
 };
 
 // One chat agent as the API returns it (ChatAgentResource in the contract).
@@ -75,6 +80,8 @@ export type ChatAgentResource = {
   };
   // Whether the agent answers voice messages and reads the photos it's sent.
   media: { voice_messages_enabled: boolean; images_enabled: boolean };
+  // The owner's website, which the agent reads while it replies when on.
+  website: { website_enabled: boolean; website_url: string };
   // Read-only. Only present while the agent has sent HOURLY_REPLY_LIMIT
   // replies this hour: when it starts answering again.
   hourly_limit_resets_at?: string;
@@ -129,6 +136,10 @@ export function toResource(
       voice_messages_enabled: row.voiceMessagesEnabled,
       images_enabled: row.imagesEnabled,
     },
+    website: {
+      website_enabled: row.websiteEnabled,
+      website_url: row.websiteUrl,
+    },
     ...hourlyLimit(row),
   };
 }
@@ -172,6 +183,7 @@ const SECTIONS: Record<
   tools: { tool_ids: 'ids' },
   order: { order_enabled: 'boolean', order_instructions: 'string' },
   media: { voice_messages_enabled: 'boolean', images_enabled: 'boolean' },
+  website: { website_enabled: 'boolean', website_url: 'string' },
   // Removed setting. Still accepted and ignored, so a dashboard page opened
   // while it existed can keep saving the agent.
   handover: { handover_enabled: 'boolean' },
@@ -230,6 +242,7 @@ export function validateCreate(req: ChatAgentInput): void {
   }
   validatePromptLength(system);
   validateOrderInstructions(req.order?.order_instructions);
+  validateWebsiteUrl(req.website?.website_url);
 }
 
 export function validateUpdate(req: ChatAgentInput): void {
@@ -249,7 +262,9 @@ export function validateUpdate(req: ChatAgentInput): void {
     req.order?.order_enabled !== undefined ||
     req.order?.order_instructions !== undefined ||
     req.media?.voice_messages_enabled !== undefined ||
-    req.media?.images_enabled !== undefined;
+    req.media?.images_enabled !== undefined ||
+    req.website?.website_enabled !== undefined ||
+    req.website?.website_url !== undefined;
   if (!hasChanges) throw badRequest('at least one setting is required');
 
   if (a?.name !== undefined && !a.name.trim()) {
@@ -264,6 +279,15 @@ export function validateUpdate(req: ChatAgentInput): void {
   }
   validatePromptLength(system);
   validateOrderInstructions(req.order?.order_instructions);
+  validateWebsiteUrl(req.website?.website_url);
+}
+
+function validateWebsiteUrl(url: string | undefined) {
+  if (url && [...url.trim()].length > MAX_WEBSITE_URL_CHARS) {
+    throw badRequest(
+      `website.website_url must be at most ${MAX_WEBSITE_URL_CHARS} characters`,
+    );
+  }
 }
 
 function validatePromptLength(system: string | undefined) {

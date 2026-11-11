@@ -64,6 +64,10 @@ model ChatAgent {
   // photo is answered by its caption alone, as before these existed.
   voiceMessagesEnabled Boolean @default(true) @map("voice_messages_enabled")
   imagesEnabled        Boolean @default(true) @map("images_enabled")
+  // The owner's website, which the agent reads while it replies when
+  // websiteEnabled is on (src/website/website-reader.ts). Stored as typed.
+  websiteUrl     String  @default("") @map("website_url")
+  websiteEnabled Boolean @default(false) @map("website_enabled")
   // Unused: the human handover switch was removed the day it shipped
   // (2026-11-03). Kept so instances still running that code don't fail
   // mid-deploy; safe to drop in a later migration.

@@ -263,6 +263,23 @@
               }
             },
             "type": "object"
+          },
+          "website": {
+            "description": "The owner's website, which the agent reads while it replies: its home page goes in the prompt and the agent can open the site's other pages. Only pages on that site are read.",
+            "properties": {
+              "website_enabled": {
+                "default": false,
+                "description": "Read the website while replying. Off, or an address that is not a website, and the agent answers without it.",
+                "type": "boolean"
+              },
+              "website_url": {
+                "default": "",
+                "description": "The website's address, such as https://yourshop.com (a missing https:// is assumed). Stored as typed, up to 500 characters.",
+                "example": "https://yourshop.com",
+                "type": "string"
+              }
+            },
+            "type": "object"
           }
         },
         "required": [
@@ -684,6 +701,23 @@
                 "default": true,
                 "description": "Read the photos people send and answer about them. Off: a photo is answered by its caption alone.",
                 "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "website": {
+            "description": "The owner's website, which the agent reads while it replies: its home page goes in the prompt and the agent can open the site's other pages. Only pages on that site are read.",
+            "properties": {
+              "website_enabled": {
+                "default": false,
+                "description": "Read the website while replying. Off, or an address that is not a website, and the agent answers without it.",
+                "type": "boolean"
+              },
+              "website_url": {
+                "default": "",
+                "description": "The website's address, such as https://yourshop.com (a missing https:// is assumed). Stored as typed, up to 500 characters.",
+                "example": "https://yourshop.com",
+                "type": "string"
               }
             },
             "type": "object"
@@ -2439,6 +2473,23 @@
                 "default": true,
                 "description": "Read the photos people send and answer about them. Off: a photo is answered by its caption alone.",
                 "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "website": {
+            "description": "The owner's website, which the agent reads while it replies: its home page goes in the prompt and the agent can open the site's other pages. Only pages on that site are read.",
+            "properties": {
+              "website_enabled": {
+                "default": false,
+                "description": "Read the website while replying. Off, or an address that is not a website, and the agent answers without it.",
+                "type": "boolean"
+              },
+              "website_url": {
+                "default": "",
+                "description": "The website's address, such as https://yourshop.com (a missing https:// is assumed). Stored as typed, up to 500 characters.",
+                "example": "https://yourshop.com",
+                "type": "string"
               }
             },
             "type": "object"

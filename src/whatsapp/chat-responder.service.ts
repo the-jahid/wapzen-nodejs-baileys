@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -34,6 +35,8 @@ import {
 } from '../orders/order-tool';
 import { OrdersService } from '../orders/orders.service';
 import { PrismaService } from '../prisma/prisma.service';
+import type { ChatWebsite } from '../tools/chat-toolbox';
+import { readWebsitePage, siteRoot } from '../website/website-reader';
 import { isGroupJid } from './group-chat';
 import {
   imageDataUrl,
@@ -449,9 +452,10 @@ export class ChatResponderService {
     try {
       await chat.setTyping(true).catch(() => undefined);
 
-      const [orders, files] = await Promise.all([
+      const [orders, files, website] = await Promise.all([
         this.ordersFor(agent, chat),
         this.filesFor(agent, chat),
+        websiteFor(agent),
       ]);
       const toolbox = ChatToolbox.for(
         agent.tools.map((t) => t.tool),
@@ -459,6 +463,7 @@ export class ChatResponderService {
         chat.send,
         orders,
         files,
+        website,
       );
       await this.loadHistory(key, chat);
       // Both ask a different service before the reply can start, so they run
@@ -483,6 +488,7 @@ export class ChatResponderService {
         agent.systemPrompt.trim(),
         toolbox?.takesOrders ? agent.orderInstructions.trim() : '',
         toolbox?.filesPrompt ?? '',
+        toolbox?.websitePrompt ?? '',
         isGroupJid(chat.peerJid) ? GROUP_CHAT_NOTE : '',
         dateContext(new Date(), zoneForPhone(agent.phoneNumber?.phoneNumber)),
         knowledge,
@@ -849,4 +855,26 @@ export class ChatResponderService {
 function noReplyLimit(agent: ReplyingAgent): boolean {
   const until = agent.user.noReplyLimitUntil;
   return until != null && until.getTime() > Date.now();
+}
+
+// How long a reply waits for the home page before starting without it. The
+// read carries on and lands in the reader's cache for the next message, and
+// the model can still ask for the page itself.
+const HOME_PAGE_WAIT_MS = 4000;
+
+// The agent's website for this reply, when reading it is on and the address
+// is one. An address that isn't, or a site that is down, never stops a reply.
+async function websiteFor(agent: ChatAgent): Promise<ChatWebsite | undefined> {
+  if (!agent.websiteEnabled) return undefined;
+  const root = siteRoot(agent.websiteUrl);
+  if (!root) return undefined;
+  const wait = new AbortController();
+  const home = await Promise.race([
+    readWebsitePage(root).catch(() => undefined),
+    delay(HOME_PAGE_WAIT_MS, undefined, { signal: wait.signal }).catch(
+      () => undefined,
+    ),
+  ]);
+  wait.abort();
+  return { root, home };
 }
