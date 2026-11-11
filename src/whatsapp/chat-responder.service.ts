@@ -97,7 +97,9 @@ type Burst = {
 // conversation.
 type ReplyingAgent = ChatAgent & {
   tools: { tool: Tool }[];
-  knowledgeBases: { knowledgeBase: { pineconeNamespace: string | null } }[];
+  knowledgeBases: {
+    knowledgeBase: { id: string; pineconeNamespace: string | null };
+  }[];
   phoneNumber: { phoneNumber: string | null } | null;
   user: { email: string };
 };
@@ -221,7 +223,7 @@ export class ChatResponderService {
           },
           knowledgeBases: {
             select: {
-              knowledgeBase: { select: { pineconeNamespace: true } },
+              knowledgeBase: { select: { id: true, pineconeNamespace: true } },
             },
           },
           phoneNumber: { select: { phoneNumber: true } },
@@ -737,10 +739,10 @@ export class ChatResponderService {
   // text. A failed lookup is logged and the agent answers from its prompt
   // alone: a thinner reply beats none.
   private async knowledgeFor(agent: ReplyingAgent, key: string, text: string) {
-    const namespaces = agent.knowledgeBases.flatMap(
-      ({ knowledgeBase }) => knowledgeBase.pineconeNamespace ?? [],
-    );
-    if (!namespaces.length) return '';
+    const knowledgeBases = agent.knowledgeBases
+      .map(({ knowledgeBase }) => knowledgeBase)
+      .filter((kb) => kb.pineconeNamespace);
+    if (!knowledgeBases.length) return '';
     if (!this.indexer.enabled) {
       this.logger.warn(
         `chat agent ${agent.id} has knowledge bases but the vector store isn't configured`,
@@ -750,7 +752,7 @@ export class ChatResponderService {
     try {
       const query = chatKnowledgeQuery(this.recent(key), text);
       return chatKnowledgePrompt(
-        await this.indexer.search(namespaces, query, CHAT_KNOWLEDGE_TOP_K),
+        await this.indexer.search(knowledgeBases, query, CHAT_KNOWLEDGE_TOP_K),
       );
     } catch (err) {
       this.logger.error(

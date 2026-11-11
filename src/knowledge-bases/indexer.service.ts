@@ -17,6 +17,19 @@ const DEFAULT_DIMENSION = 3072;
 // are about the question. Measured on the Go server: questions an index can
 // answer score 0.17-0.46, ones it can't 0.03-0.07.
 const MIN_RELEVANCE_SCORE = 0.15;
+// Pinecone's most ids per list page.
+const LIST_PAGE = 100;
+
+// The one namespace every knowledge base created since 2026-11-11 writes
+// into. Pinecone's plan caps an index at 100 namespaces, and one per
+// knowledge base hit that cap: every create with text then failed. Records
+// here carry their knowledge base's id as an id prefix and in metadata, so
+// one base's vectors can still be listed, deleted and searched on their own.
+// Older knowledge bases keep their own kb_<uuid> namespace and work as before.
+export const SHARED_NAMESPACE = 'kb_shared';
+
+// What the indexer needs to know about a knowledge base to find its vectors.
+export type KnowledgeBaseRef = Pick<KnowledgeBase, 'id' | 'pineconeNamespace'>;
 
 // One passage found for a question.
 export type KnowledgeSnippet = { title: string; text: string; score: number };
@@ -101,7 +114,7 @@ export class IndexerService {
         if (!chunks.length) continue;
 
         const embeddings = await this.embed(chunks);
-        const ids = chunks.map((_, i) => vectorId(source.title, i));
+        const ids = chunks.map((_, i) => vectorId(kb, source.title, i));
         // Added before the upsert: it runs in batches, so a failure can leave
         // part of this source written.
         written.push(...ids);
@@ -144,16 +157,22 @@ export class IndexerService {
   ) {
     if (source.chunkCount <= 0) return;
     const ids = Array.from({ length: source.chunkCount }, (_, i) =>
-      vectorId(source.title, i),
+      vectorId(kb, source.title, i),
     );
     await this.deleteIds(this.namespaceOf(kb), ids);
   }
 
-  // Removes every vector of a knowledge base. Pinecone answers 404 for a
-  // namespace that holds nothing, which is the state wanted.
-  async purgeNamespace(kb: KnowledgeBase) {
+  // Removes every vector of a knowledge base: its whole namespace for an
+  // older one, every id under its prefix in the shared one. Pinecone answers
+  // 404 for a namespace that holds nothing, which is the state wanted.
+  async purgeNamespace(kb: KnowledgeBaseRef) {
     if (!kb.pineconeNamespace) return;
     try {
+      if (isShared(kb)) {
+        const ids = await this.listIds(SHARED_NAMESPACE, idPrefix(kb));
+        if (ids.length) await this.deleteIds(SHARED_NAMESPACE, ids);
+        return;
+      }
       await this.pinecone('/vectors/delete', {
         namespace: kb.pineconeNamespace,
         deleteAll: true,
@@ -163,22 +182,35 @@ export class IndexerService {
     }
   }
 
-  // The best passages for a question across namespaces, most relevant first.
-  // One namespace failing leaves the others' answers; only every one failing
-  // throws. This shares embed() with indexing because a question embedded by
-  // another model wouldn't be comparable to the chunks.
+  // The best passages for a question across knowledge bases, most relevant
+  // first. An older base is one query on its own namespace; every base in the
+  // shared namespace is answered by one query filtered to their ids. One query
+  // failing leaves the others' answers; only every one failing throws. This
+  // shares embed() with indexing because a question embedded by another model
+  // wouldn't be comparable to the chunks.
   async search(
-    namespaces: string[],
+    knowledgeBases: KnowledgeBaseRef[],
     query: string,
     topK: number,
   ): Promise<KnowledgeSnippet[]> {
     const question = query.trim();
-    if (!question || !namespaces.length) return [];
+    const shared = knowledgeBases.filter(isShared).map((kb) => kb.id);
+    const own = knowledgeBases.flatMap((kb) =>
+      !isShared(kb) && kb.pineconeNamespace ? [kb.pineconeNamespace] : [],
+    );
+    if (!question || (!shared.length && !own.length)) return [];
     const [vector] = await this.embed([question]);
 
-    const results = await Promise.allSettled(
-      namespaces.map((namespace) => this.query(namespace, vector, topK)),
-    );
+    const results = await Promise.allSettled([
+      ...own.map((namespace) => this.query(namespace, vector, topK)),
+      ...(shared.length
+        ? [
+            this.query(SHARED_NAMESPACE, vector, topK, {
+              knowledge_base_id: { $in: shared },
+            }),
+          ]
+        : []),
+    ]);
     const failed = results.find((r) => r.status === 'rejected');
     if (failed && results.every((r) => r.status === 'rejected')) {
       throw failed.reason;
@@ -189,7 +221,7 @@ export class IndexerService {
       .slice(0, topK);
   }
 
-  private namespaceOf(kb: KnowledgeBase): string {
+  private namespaceOf(kb: KnowledgeBaseRef): string {
     if (!kb.pineconeNamespace) {
       throw new Error(`knowledge base ${kb.id} has no vector-store namespace`);
     }
@@ -262,15 +294,44 @@ export class IndexerService {
     }
   }
 
+  // Every id in a namespace that starts with prefix. Listing is
+  // eventually consistent, so a record written seconds ago can be missing.
+  private async listIds(namespace: string, prefix: string) {
+    const ids: string[] = [];
+    let token = '';
+    do {
+      const params = new URLSearchParams({
+        namespace,
+        prefix,
+        limit: String(LIST_PAGE),
+      });
+      if (token) params.set('paginationToken', token);
+      const res = await this.pinecone(`/vectors/list?${params}`);
+      const body = (await res.json()) as {
+        vectors?: { id: string }[];
+        pagination?: { next?: string };
+      };
+      ids.push(...(body.vectors ?? []).map((v) => v.id));
+      token = body.pagination?.next ?? '';
+    } while (token);
+    return ids;
+  }
+
   // Asks for the full topK from each namespace, because the merge in search()
   // decides which are worth keeping. A namespace that holds nothing is a 404.
-  private async query(namespace: string, vector: number[], topK: number) {
+  private async query(
+    namespace: string,
+    vector: number[],
+    topK: number,
+    filter?: Record<string, unknown>,
+  ) {
     try {
       const res = await this.pinecone('/query', {
         namespace,
         vector,
         topK,
         includeMetadata: true,
+        ...(filter ? { filter } : {}),
       });
       const body = (await res.json()) as { matches?: QueryMatch[] };
       return (body.matches ?? []).flatMap(toSnippet);
@@ -280,15 +341,18 @@ export class IndexerService {
     }
   }
 
-  private async pinecone(path: string, payload: unknown) {
+  // POSTs payload as JSON, or GETs path when there is none.
+  private async pinecone(path: string, payload?: unknown) {
     const res = await fetch(this.pineconeHost + path, {
-      method: 'POST',
+      method: payload === undefined ? 'GET' : 'POST',
       headers: {
         'Api-Key': this.pineconeKey,
-        'Content-Type': 'application/json',
         'X-Pinecone-API-Version': PINECONE_API_VERSION,
+        ...(payload === undefined
+          ? {}
+          : { 'Content-Type': 'application/json' }),
       },
-      body: JSON.stringify(payload),
+      body: payload === undefined ? undefined : JSON.stringify(payload),
       signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) {
@@ -312,7 +376,9 @@ function toSnippet(match: QueryMatch): KnowledgeSnippet[] {
   const name = typeof title === 'string' ? title.trim() : '';
   return [
     {
-      title: name || match.id.split(CHUNK_ID_SEPARATOR)[0],
+      title:
+        name ||
+        match.id.replace(/^[0-9a-f-]{36}\//, '').split(CHUNK_ID_SEPARATOR)[0],
       text: passage,
       score,
     },
@@ -329,11 +395,26 @@ class UpstreamError extends Error {
   }
 }
 
-// A chunk's Pinecone record id: the source title verbatim, so the console
-// lists content by name; chunks after the first get "#2", "#3", ... Unique
-// because titles are unique per knowledge base and may not contain "#".
-function vectorId(title: string, chunkIndex: number): string {
-  return chunkIndex === 0
-    ? title
-    : `${title}${CHUNK_ID_SEPARATOR}${chunkIndex + 1}`;
+function isShared(kb: KnowledgeBaseRef): boolean {
+  return kb.pineconeNamespace === SHARED_NAMESPACE;
+}
+
+// "<knowledge base id>/" in the shared namespace, where titles from different
+// knowledge bases would otherwise collide; nothing in an older base's own
+// namespace. A uuid has a fixed length, so no base's prefix starts another's.
+function idPrefix(kb: KnowledgeBaseRef): string {
+  return isShared(kb) ? `${kb.id}/` : '';
+}
+
+// A chunk's Pinecone record id: the source title verbatim after the prefix,
+// so the console lists content by name; chunks after the first get "#2",
+// "#3", ... Unique because titles are unique per knowledge base and may not
+// contain "#".
+function vectorId(
+  kb: KnowledgeBaseRef,
+  title: string,
+  chunkIndex: number,
+): string {
+  const id = idPrefix(kb) + title;
+  return chunkIndex === 0 ? id : `${id}${CHUNK_ID_SEPARATOR}${chunkIndex + 1}`;
 }
