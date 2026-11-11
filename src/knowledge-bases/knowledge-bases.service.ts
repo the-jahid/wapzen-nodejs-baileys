@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { KnowledgeBase, Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { IndexerService, SHARED_NAMESPACE } from './indexer.service';
+import { IndexerService, userNamespace } from './indexer.service';
 import {
   apiError,
   checkChunkOrder,
@@ -67,8 +67,8 @@ export class KnowledgeBasesService {
       );
     }
 
-    // The id prefixes this knowledge base's records in the shared namespace,
-    // so it is fixed before anything is written.
+    // The id prefixes this knowledge base's records in its owner's
+    // namespace, so it is fixed before anything is written.
     const id = randomUUID();
     let kb: KnowledgeBase;
     try {
@@ -77,7 +77,7 @@ export class KnowledgeBasesService {
           id,
           userId,
           name: input.name,
-          pineconeNamespace: SHARED_NAMESPACE,
+          pineconeNamespace: userNamespace(userId),
           enableAutoRefresh: input.enableAutoRefresh,
           maxChunkSize: input.maxChunkSize,
           minChunkSize: input.minChunkSize,

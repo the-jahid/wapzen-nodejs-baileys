@@ -1,13 +1,12 @@
 import type { ConfigService } from '@nestjs/config';
 import type { KnowledgeBase } from '../generated/prisma/client';
-import { IndexerService, SHARED_NAMESPACE } from './indexer.service';
+import { IndexerService, userNamespace } from './indexer.service';
 
 jest.mock('@nestjs/config', () => ({ ConfigService: class {} }));
 
-// Checks what the indexer sends to Pinecone, for knowledge bases in the
-// shared namespace and for older ones with a namespace of their own. fetch is
-// faked: Pinecone's plan allows only 100 namespaces, so a live run can't make
-// throwaway ones.
+// Checks what the indexer sends to Pinecone, for knowledge bases in their
+// owner's namespace and for older ones with a namespace of their own. fetch
+// is faked so nothing reaches a real index.
 
 const HOST = 'https://index.test';
 const DIM = 4;
@@ -71,12 +70,24 @@ function setup(listPages: { ids: string[]; next?: string }[] = []) {
   return { indexer, calls, pinecone };
 }
 
-const shared = {
+const USER_A = 'aaaaaaaa-0000-4000-8000-000000000001';
+const USER_B = 'bbbbbbbb-0000-4000-8000-000000000002';
+
+// Two knowledge bases of user A and one of user B, all made since the switch.
+const a1 = {
   id: '11111111-2222-3333-4444-555555555555',
-  pineconeNamespace: SHARED_NAMESPACE,
+  userId: USER_A,
+  pineconeNamespace: userNamespace(USER_A),
   minChunkSize: 10,
   maxChunkSize: 60,
 } as KnowledgeBase;
+const a2 = { ...a1, id: '22222222-2222-3333-4444-555555555555' };
+const b1 = {
+  ...a1,
+  id: '33333333-2222-3333-4444-555555555555',
+  userId: USER_B,
+  pineconeNamespace: userNamespace(USER_B),
+};
 
 const legacy = {
   id: '99999999-8888-7777-6666-555555555555',
@@ -90,12 +101,16 @@ const longText =
 
 afterEach(() => jest.restoreAllMocks());
 
-describe('IndexerService in the shared namespace', () => {
-  it('prefixes record ids with the knowledge base id', async () => {
+describe('IndexerService in a user namespace', () => {
+  it('names the namespace after the user', () => {
+    expect(userNamespace(USER_A)).toBe(`user_${USER_A}`);
+  });
+
+  it("writes to the owner's namespace with ids prefixed by the knowledge base", async () => {
     const { indexer, pinecone } = setup();
     let counts: number[] = [];
     await indexer.indexSources(
-      shared,
+      a1,
       [{ id: 's1', type: 'text', title: 'Abyra', content: longText }],
       (c) => {
         counts = c;
@@ -103,72 +118,85 @@ describe('IndexerService in the shared namespace', () => {
       },
     );
     const [upsert] = pinecone('/vectors/upsert');
-    expect(upsert.body.namespace).toBe(SHARED_NAMESPACE);
+    expect(upsert.body.namespace).toBe(`user_${USER_A}`);
     expect(upsert.body.vectors.map((v) => v.id)).toEqual([
-      `${shared.id}/Abyra`,
-      `${shared.id}/Abyra#2`,
+      `${a1.id}/Abyra`,
+      `${a1.id}/Abyra#2`,
     ]);
-    expect(upsert.body.vectors[0].metadata.knowledge_base_id).toBe(shared.id);
+    expect(upsert.body.vectors[0].metadata.knowledge_base_id).toBe(a1.id);
     expect(counts).toEqual([2]);
   });
 
   it('deletes one source by its prefixed ids', async () => {
     const { indexer, pinecone } = setup();
-    await indexer.deleteSourceVectors(shared, {
-      title: 'Abyra',
-      chunkCount: 2,
-    });
+    await indexer.deleteSourceVectors(a1, { title: 'Abyra', chunkCount: 2 });
     expect(pinecone('/vectors/delete')[0].body).toEqual({
-      namespace: SHARED_NAMESPACE,
-      ids: [`${shared.id}/Abyra`, `${shared.id}/Abyra#2`],
+      namespace: `user_${USER_A}`,
+      ids: [`${a1.id}/Abyra`, `${a1.id}/Abyra#2`],
     });
   });
 
-  it('purges only its own prefix, across list pages, never deleteAll', async () => {
+  it("purges only that knowledge base's prefix, across list pages, never deleteAll", async () => {
     const { indexer, pinecone } = setup([
-      { ids: [`${shared.id}/A`], next: 'page2' },
-      { ids: [`${shared.id}/B`] },
+      { ids: [`${a1.id}/A`], next: 'page2' },
+      { ids: [`${a1.id}/B`] },
     ]);
-    await indexer.purgeNamespace(shared);
+    await indexer.purgeNamespace(a1);
     const lists = pinecone('/vectors/list');
     expect(lists).toHaveLength(2);
     const first = new URL(lists[0].url).searchParams;
-    expect(first.get('namespace')).toBe(SHARED_NAMESPACE);
-    expect(first.get('prefix')).toBe(`${shared.id}/`);
+    expect(first.get('namespace')).toBe(`user_${USER_A}`);
+    expect(first.get('prefix')).toBe(`${a1.id}/`);
     expect(new URL(lists[1].url).searchParams.get('paginationToken')).toBe(
       'page2',
     );
     const deletes = pinecone('/vectors/delete');
     expect(deletes).toHaveLength(1);
     expect(deletes[0].body).toEqual({
-      namespace: SHARED_NAMESPACE,
-      ids: [`${shared.id}/A`, `${shared.id}/B`],
+      namespace: `user_${USER_A}`,
+      ids: [`${a1.id}/A`, `${a1.id}/B`],
     });
   });
 
   it('sends no delete when the prefix holds nothing', async () => {
     const { indexer, pinecone } = setup([{ ids: [] }]);
-    await indexer.purgeNamespace(shared);
+    await indexer.purgeNamespace(a1);
     expect(pinecone('/vectors/delete')).toHaveLength(0);
   });
 
-  it('searches shared bases in one filtered query and older ones on their own', async () => {
+  it("searches only the agent's attached bases in their owner's namespace", async () => {
     const { indexer, pinecone } = setup();
-    const other = { ...shared, id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' };
-    const snippets = await indexer.search(
-      [shared, legacy, other],
-      'when are you open',
-      4,
-    );
+    // a2 belongs to the same user but isn't attached, so it must not be searched.
+    const snippets = await indexer.search([a1], 'when are you open', 4);
     const queries = pinecone('/query').map((c) => c.body);
-    expect(queries).toHaveLength(2);
-    expect(queries[0].namespace).toBe(legacy.pineconeNamespace);
-    expect(queries[0].filter).toBeUndefined();
-    expect(queries[1].namespace).toBe(SHARED_NAMESPACE);
-    expect(queries[1].filter).toEqual({
-      knowledge_base_id: { $in: [shared.id, other.id] },
-    });
+    expect(queries).toEqual([
+      expect.objectContaining({
+        namespace: `user_${USER_A}`,
+        filter: { knowledge_base_id: { $in: [a1.id] } },
+      }),
+    ]);
     expect(snippets[0]).toMatchObject({ title: 'Guide' });
+  });
+
+  it('asks each namespace once, filtered, and older ones unfiltered', async () => {
+    const { indexer, pinecone } = setup();
+    await indexer.search([a1, legacy, a2, b1], 'when are you open', 4);
+    const queries = pinecone('/query').map((c) => c.body);
+    expect(queries).toHaveLength(3);
+    expect(queries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          namespace: `user_${USER_A}`,
+          filter: { knowledge_base_id: { $in: [a1.id, a2.id] } },
+        }),
+        expect.objectContaining({
+          namespace: `user_${USER_B}`,
+          filter: { knowledge_base_id: { $in: [b1.id] } },
+        }),
+      ]),
+    );
+    const own = queries.find((q) => q.namespace === legacy.pineconeNamespace);
+    expect(own?.filter).toBeUndefined();
   });
 });
 
@@ -178,7 +206,7 @@ describe('IndexerService for an older knowledge base', () => {
     await indexer.indexSources(
       legacy,
       [{ id: 's1', type: 'text', title: 'Abyra', content: longText }],
-      async () => {},
+      () => Promise.resolve(),
     );
     const [upsert] = pinecone('/vectors/upsert');
     expect(upsert.body.namespace).toBe(legacy.pineconeNamespace);

@@ -20,13 +20,19 @@ const MIN_RELEVANCE_SCORE = 0.15;
 // Pinecone's most ids per list page.
 const LIST_PAGE = 100;
 
-// The one namespace every knowledge base created since 2026-11-11 writes
-// into. Pinecone's plan caps an index at 100 namespaces, and one per
-// knowledge base hit that cap: every create with text then failed. Records
-// here carry their knowledge base's id as an id prefix and in metadata, so
-// one base's vectors can still be listed, deleted and searched on their own.
-// Older knowledge bases keep their own kb_<uuid> namespace and work as before.
-export const SHARED_NAMESPACE = 'kb_shared';
+// Every knowledge base created since 2026-11-11 writes into its owner's
+// namespace, one per user. (One per knowledge base hit the old Pinecone
+// plan's 100-namespace cap, and every create with text then failed.) A user
+// can own several knowledge bases, so records in a user namespace carry their
+// knowledge base's id as an id prefix and in metadata: one base's vectors can
+// still be listed, deleted and searched on their own.
+export function userNamespace(userId: string): string {
+  return `user_${userId}`;
+}
+
+// The namespaces from before: one per knowledge base, 'kb_' + its id without
+// dashes, holding bare-title ids. Those bases keep working as they are.
+const OWN_NAMESPACE = /^kb_[0-9a-f]{32}$/;
 
 // What the indexer needs to know about a knowledge base to find its vectors.
 export type KnowledgeBaseRef = Pick<KnowledgeBase, 'id' | 'pineconeNamespace'>;
@@ -163,14 +169,15 @@ export class IndexerService {
   }
 
   // Removes every vector of a knowledge base: its whole namespace for an
-  // older one, every id under its prefix in the shared one. Pinecone answers
-  // 404 for a namespace that holds nothing, which is the state wanted.
+  // older one, every id under its prefix in a user namespace (the owner's
+  // other knowledge bases live there too). Pinecone answers 404 for a
+  // namespace that holds nothing, which is the state wanted.
   async purgeNamespace(kb: KnowledgeBaseRef) {
     if (!kb.pineconeNamespace) return;
     try {
-      if (isShared(kb)) {
-        const ids = await this.listIds(SHARED_NAMESPACE, idPrefix(kb));
-        if (ids.length) await this.deleteIds(SHARED_NAMESPACE, ids);
+      if (holdsSeveral(kb)) {
+        const ids = await this.listIds(kb.pineconeNamespace, idPrefix(kb));
+        if (ids.length) await this.deleteIds(kb.pineconeNamespace, ids);
         return;
       }
       await this.pinecone('/vectors/delete', {
@@ -183,34 +190,42 @@ export class IndexerService {
   }
 
   // The best passages for a question across knowledge bases, most relevant
-  // first. An older base is one query on its own namespace; every base in the
-  // shared namespace is answered by one query filtered to their ids. One query
-  // failing leaves the others' answers; only every one failing throws. This
-  // shares embed() with indexing because a question embedded by another model
-  // wouldn't be comparable to the chunks.
+  // first. One query per namespace: an older base's own namespace as is, a
+  // user namespace filtered to just the bases asked about, since the owner's
+  // other knowledge bases live there too. One query failing leaves the
+  // others' answers; only every one failing throws. This shares embed() with
+  // indexing because a question embedded by another model wouldn't be
+  // comparable to the chunks.
   async search(
     knowledgeBases: KnowledgeBaseRef[],
     query: string,
     topK: number,
   ): Promise<KnowledgeSnippet[]> {
     const question = query.trim();
-    const shared = knowledgeBases.filter(isShared).map((kb) => kb.id);
-    const own = knowledgeBases.flatMap((kb) =>
-      !isShared(kb) && kb.pineconeNamespace ? [kb.pineconeNamespace] : [],
-    );
-    if (!question || (!shared.length && !own.length)) return [];
+    // namespace -> the knowledge base ids to filter to, or null for no filter.
+    const byNamespace = new Map<string, string[] | null>();
+    for (const kb of knowledgeBases) {
+      if (!kb.pineconeNamespace) continue;
+      if (!holdsSeveral(kb)) {
+        byNamespace.set(kb.pineconeNamespace, null);
+        continue;
+      }
+      const ids = byNamespace.get(kb.pineconeNamespace) ?? [];
+      byNamespace.set(kb.pineconeNamespace, [...ids, kb.id]);
+    }
+    if (!question || !byNamespace.size) return [];
     const [vector] = await this.embed([question]);
 
-    const results = await Promise.allSettled([
-      ...own.map((namespace) => this.query(namespace, vector, topK)),
-      ...(shared.length
-        ? [
-            this.query(SHARED_NAMESPACE, vector, topK, {
-              knowledge_base_id: { $in: shared },
-            }),
-          ]
-        : []),
-    ]);
+    const results = await Promise.allSettled(
+      [...byNamespace].map(([namespace, ids]) =>
+        this.query(
+          namespace,
+          vector,
+          topK,
+          ids ? { knowledge_base_id: { $in: ids } } : undefined,
+        ),
+      ),
+    );
     const failed = results.find((r) => r.status === 'rejected');
     if (failed && results.every((r) => r.status === 'rejected')) {
       throw failed.reason;
@@ -395,15 +410,18 @@ class UpstreamError extends Error {
   }
 }
 
-function isShared(kb: KnowledgeBaseRef): boolean {
-  return kb.pineconeNamespace === SHARED_NAMESPACE;
+// True for a namespace several knowledge bases share (a user namespace),
+// false for an older base's namespace of its own.
+function holdsSeveral(kb: KnowledgeBaseRef): boolean {
+  return !OWN_NAMESPACE.test(kb.pineconeNamespace ?? '');
 }
 
-// "<knowledge base id>/" in the shared namespace, where titles from different
-// knowledge bases would otherwise collide; nothing in an older base's own
-// namespace. A uuid has a fixed length, so no base's prefix starts another's.
+// "<knowledge base id>/" in a user namespace, where titles from the owner's
+// different knowledge bases would otherwise collide; nothing in an older
+// base's own namespace. A uuid has a fixed length, so no base's prefix starts
+// another's.
 function idPrefix(kb: KnowledgeBaseRef): string {
-  return isShared(kb) ? `${kb.id}/` : '';
+  return holdsSeveral(kb) ? `${kb.id}/` : '';
 }
 
 // A chunk's Pinecone record id: the source title verbatim after the prefix,

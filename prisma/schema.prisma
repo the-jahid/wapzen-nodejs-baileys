@@ -211,9 +211,9 @@ model ChatMessage {
 }
 
 // Mirrors the Go server's knowledge_bases table (migrations 00031–00032). The
-// sources' embeddings live in Pinecone under pineconeNamespace: 'kb_shared'
-// for every knowledge base created since 2026-11-11 (records prefixed
-// '<id>/'), 'kb_' + the id without dashes for older ones. Status follows indexing:
+// sources' embeddings live in Pinecone under pineconeNamespace: the owner's
+// 'user_<user id>' for every knowledge base created since 2026-11-11 (records
+// prefixed '<id>/'), 'kb_' + the id without dashes for older ones. Status follows indexing:
 // 'in_progress' | 'complete' | 'error' | 'refreshing_in_progress'. The name
 // length, chunk-size bounds and min <= max are CHECKs in the migration SQL.
 model KnowledgeBase {

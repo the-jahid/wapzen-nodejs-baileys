@@ -1,5 +1,5 @@
-// Moves every knowledge base that still has a Pinecone namespace of its own
-// (kb_<uuid>, from before 2026-11-11) into the shared namespace of the index
+// Moves every knowledge base that isn't in its owner's namespace yet (the
+// older kb_<uuid> ones, one namespace each) into user_<user id> in the index
 // the server now uses. The old index hit its plan's 100-namespace cap. The
 // vectors are rebuilt from the source text saved in knowledge_base_sources,
 // with the server's own compiled indexer, so ids, chunks and metadata match
@@ -7,20 +7,20 @@
 //
 // Dry run by default: it only counts what it would move. Run it after the
 // deploy that switched PINECONE_API_KEY / PINECONE_INDEX_HOST, since the
-// server only reads kb_shared from the new index:
+// server only reads user namespaces from the new index:
 //
 //   npm run build
 //   MOVE_DATABASE_URL=... OPENAI_API_KEY=... PINECONE_API_KEY=<new> \
-//   PINECONE_INDEX_HOST=<new> node scripts/move-knowledge-to-shared.mjs --apply
+//   PINECONE_INDEX_HOST=<new> node scripts/move-knowledge-to-user-namespaces.mjs --apply
 //
 // Safe to run again: each base's prefix is cleared before it is rewritten,
-// and a base whose row already says kb_shared is skipped. The old index is
-// never touched.
+// and a base whose row already names its owner's namespace is skipped. The
+// old index is never touched.
 import { createRequire } from 'node:module';
 import pg from 'pg';
 
 const require = createRequire(import.meta.url);
-const { IndexerService, SHARED_NAMESPACE } = require(
+const { IndexerService, userNamespace } = require(
   '../dist/knowledge-bases/indexer.service.js',
 );
 
@@ -42,12 +42,11 @@ const db = new pg.Client({
 await db.connect();
 
 const { rows: bases } = await db.query(
-  `SELECT id, knowledge_base_name AS name, pinecone_namespace,
+  `SELECT id, user_id, knowledge_base_name AS name, pinecone_namespace,
           min_chunk_size, max_chunk_size
      FROM knowledge_bases
-    WHERE pinecone_namespace IS DISTINCT FROM $1
+    WHERE pinecone_namespace IS DISTINCT FROM 'user_' || user_id
     ORDER BY created_at`,
-  [SHARED_NAMESPACE],
 );
 console.log(`${bases.length} knowledge bases to move${apply ? '' : ' (dry run)'}`);
 
@@ -60,14 +59,15 @@ for (const base of bases) {
       WHERE knowledge_base_id = $1 ORDER BY created_at, id`,
     [base.id],
   );
-  const label = `${base.id} "${base.name}" (${sources.length} sources)`;
+  const namespace = userNamespace(base.user_id);
+  const label = `${base.id} "${base.name}" (${sources.length} sources) -> ${namespace}`;
   if (!apply) {
     console.log(`would move ${label}`);
     continue;
   }
   const kb = {
     id: base.id,
-    pineconeNamespace: SHARED_NAMESPACE,
+    pineconeNamespace: namespace,
     minChunkSize: base.min_chunk_size,
     maxChunkSize: base.max_chunk_size,
   };
@@ -86,7 +86,7 @@ for (const base of bases) {
         await db.query(
           `UPDATE knowledge_bases SET pinecone_namespace = $2, updated_at = now()
             WHERE id = $1`,
-          [base.id, SHARED_NAMESPACE],
+          [base.id, namespace],
         );
         await db.query('COMMIT');
       } catch (err) {
