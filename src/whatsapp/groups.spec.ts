@@ -9,7 +9,7 @@ import type { BaseMessage } from '@langchain/core/messages';
 import { PrismaPg } from '@prisma/adapter-pg';
 import type { ConfigService } from '@nestjs/config';
 import { ChatAgentsService } from '../chat-agents/chat-agents.service';
-import { toResource } from '../chat-agents/chat-agents.types';
+import { FREE_TRIAL_REPLIES, toResource } from '../chat-agents/chat-agents.types';
 import { ChatConversationsService } from '../chat-conversations/chat-conversations.service';
 import { PrismaClient } from '../generated/prisma/client';
 import type { IndexerService } from '../knowledge-bases/indexer.service';
@@ -753,17 +753,17 @@ describe('the free trial', () => {
       {} as AgentFilesService,
     );
 
-  it('sends the 100th reply, then stops the agent', async () => {
+  it('sends the last trial reply, then stops the agent', async () => {
     const { userId, id, sock } = await linkedNumber();
     await prisma.user.update({
       where: { id: userId },
-      data: { aiReplyCount: 99 },
+      data: { aiReplyCount: FREE_TRIAL_REPLIES - 1 },
     });
     incoming(sock, CONTACT, { conversation: 'hello' });
     await repliesOn(sock);
     expect(sock.sent).toHaveLength(1);
     const user = await userOf(userId);
-    expect(user.aiReplyCount).toBe(100);
+    expect(user.aiReplyCount).toBe(FREE_TRIAL_REPLIES);
     expect(user.trialEndedAt).not.toBeNull();
     expect((await agentOn(id)).status).toBe('inactive');
 
@@ -783,7 +783,7 @@ describe('the free trial', () => {
     const { userId, id, sock } = await linkedNumber();
     await prisma.user.update({
       where: { id: userId },
-      data: { aiReplyCount: 140 },
+      data: { aiReplyCount: FREE_TRIAL_REPLIES + 40 },
     });
     incoming(sock, CONTACT, { conversation: 'hello' });
     await new Promise((resolve) => setTimeout(resolve, 3_000));
@@ -830,7 +830,7 @@ describe('the free trial', () => {
     const { userId, id } = await linkedNumber();
     await prisma.user.update({
       where: { id: userId },
-      data: { aiReplyCount: 100, trialEndedAt: new Date() },
+      data: { aiReplyCount: FREE_TRIAL_REPLIES, trialEndedAt: new Date() },
     });
     await prisma.chatAgent.updateMany({
       where: { phoneNumberId: id },
