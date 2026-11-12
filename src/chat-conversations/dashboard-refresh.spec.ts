@@ -300,9 +300,9 @@ describe("an agent's live state", () => {
     ((await http().get(`${AGENTS}/live`).expect(200)).body as { data: Live[] })
       .data;
 
-  it('is only the id while the agent is under its limit', async () => {
+  it('is only the id and status while the agent is under its limit', async () => {
     const { agentId } = await account();
-    expect(await live()).toEqual([{ id: agentId }]);
+    expect(await live()).toEqual([{ id: agentId, status: 'active' }]);
   });
 
   it('says when an agent at its limit answers again', async () => {
@@ -315,6 +315,7 @@ describe("an agent's live state", () => {
     expect(await live()).toEqual([
       {
         id: agentId,
+        status: 'active',
         hourly_limit_resets_at: new Date(
           started.getTime() + HOUR,
         ).toISOString(),

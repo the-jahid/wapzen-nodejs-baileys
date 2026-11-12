@@ -11,8 +11,10 @@ import { activity } from '../activity/activity';
 import { AgentFilesService } from '../agent-files/agent-files.service';
 import type { OutgoingFile } from '../agent-files/agent-files.types';
 import {
+  FREE_TRIAL_REPLIES,
   GROUP_HOURLY_REPLY_LIMIT,
   HOURLY_REPLY_LIMIT,
+  onPaidPlan,
 } from '../chat-agents/chat-agents.types';
 import {
   appendMessage,
@@ -445,7 +447,12 @@ export class ChatResponderService {
       return '';
     }
     const inGroup = isGroupJid(chat.peerJid);
-    if (!(await this.claimReply(agent, inGroup))) return '';
+    const trialCount = await this.claimTrialReply(agent);
+    if (trialCount === false) return '';
+    if (!(await this.claimReply(agent, inGroup))) {
+      await this.releaseTrialReply(agent);
+      return '';
+    }
 
     const key = `${agent.id}|${chat.phoneNumberId}|${chat.peerJid}`;
     let sent = false;
@@ -542,6 +549,9 @@ export class ChatResponderService {
       await chat.setTyping(false).catch(() => undefined);
       if (reply) await chat.send(reply);
       sent = true;
+      // The trial's last reply went out: the agent stops now, so the
+      // dashboard says so before the next message comes.
+      if (trialCount === FREE_TRIAL_REPLIES) await this.endTrial(agent);
       // The record says which files went out, or the agent would forget and
       // send them again. The customer already has the files, not this line.
       const record = [
@@ -566,7 +576,73 @@ export class ChatResponderService {
       if (!sent) {
         await chat.setTyping(false).catch(() => undefined);
         await this.releaseReply(agent, inGroup);
+        await this.releaseTrialReply(agent);
       }
+    }
+  }
+
+  // Takes one of a free account's FREE_TRIAL_REPLIES before asking the model,
+  // in one statement so replies running together can't overshoot it. Returns
+  // the account's count with this reply, true when it isn't counted (paid
+  // plan, or the count failed: that mustn't silence the agent), or false when
+  // the trial is used up, which also stops the account's agents.
+  private async claimTrialReply(
+    agent: ReplyingAgent,
+  ): Promise<number | boolean> {
+    if (onPaidPlan(agent.user)) return true;
+    try {
+      const [claimed] = await this.prisma.$queryRaw<{ count: number }[]>`
+        UPDATE users SET ai_reply_count = ai_reply_count + 1
+        WHERE id = ${agent.userId}
+          AND trial_ended_at IS NULL
+          AND ai_reply_count < ${FREE_TRIAL_REPLIES}
+        RETURNING ai_reply_count AS count`;
+      if (claimed) return claimed.count;
+    } catch (err) {
+      this.logger.error(
+        `counting chat agent ${agent.id}'s trial reply failed: ${(err as Error).message}`,
+      );
+      return true;
+    }
+    await this.endTrial(agent);
+    return false;
+  }
+
+  // Hands back a trial reply claimed for a message that got no answer.
+  private async releaseTrialReply(agent: ReplyingAgent) {
+    if (onPaidPlan(agent.user)) return;
+    await this.prisma.user
+      .updateMany({
+        where: { id: agent.userId, trialEndedAt: null, aiReplyCount: { gt: 0 } },
+        data: { aiReplyCount: { decrement: 1 } },
+      })
+      .catch(() => undefined);
+  }
+
+  // The free trial is used up: the account is marked and all its agents go
+  // inactive, which the dashboard shows with the paid-plan card. Logged once,
+  // by whichever call stamped it.
+  private async endTrial(agent: ReplyingAgent) {
+    try {
+      const [stamped] = await this.prisma.$transaction([
+        this.prisma.user.updateMany({
+          where: { id: agent.userId, trialEndedAt: null },
+          data: { trialEndedAt: new Date() },
+        }),
+        this.prisma.chatAgent.updateMany({
+          where: { userId: agent.userId, status: 'active' },
+          data: { status: 'inactive', updatedAt: new Date() },
+        }),
+      ]);
+      if (stamped.count) {
+        activity(
+          `free trial ended: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `ending ${agent.user.email}'s free trial failed: ${(err as Error).message}`,
+      );
     }
   }
 
@@ -853,8 +929,7 @@ export class ChatResponderService {
 // (users.no_reply_limit_until, set by hand). Checked again on release, so a
 // reply that wasn't counted is never handed back.
 function noReplyLimit(agent: ReplyingAgent): boolean {
-  const until = agent.user.noReplyLimitUntil;
-  return until != null && until.getTime() > Date.now();
+  return onPaidPlan(agent.user);
 }
 
 // How long a reply waits for the home page before starting without it. The

@@ -8,6 +8,7 @@ import { AIMessage } from '@langchain/core/messages';
 import type { BaseMessage } from '@langchain/core/messages';
 import { PrismaPg } from '@prisma/adapter-pg';
 import type { ConfigService } from '@nestjs/config';
+import { ChatAgentsService } from '../chat-agents/chat-agents.service';
 import { toResource } from '../chat-agents/chat-agents.types';
 import { ChatConversationsService } from '../chat-conversations/chat-conversations.service';
 import { PrismaClient } from '../generated/prisma/client';
@@ -564,7 +565,12 @@ describe('messages in a group', () => {
         hourly_reply_count = 49, hourly_window_started_at = now()
       WHERE phone_number_id = ${id}`;
     const resource = async () =>
-      toResource({ ...(await agentOn(id)), knowledgeBases: [], tools: [] });
+      toResource({
+        ...(await agentOn(id)),
+        knowledgeBases: [],
+        tools: [],
+        user: { noReplyLimitUntil: null, trialEndedAt: null },
+      });
     expect((await resource()).hourly_limit_resets_at).toBeUndefined();
 
     incoming(sock, contact, { conversation: 'number 50' });
@@ -593,6 +599,7 @@ describe('messages in a group', () => {
         hourlyWindowStartedAt: new Date(Date.now() - 61 * 60 * 1000),
         knowledgeBases: [],
         tools: [],
+        user: { noReplyLimitUntil: null, trialEndedAt: null },
       }).hourly_limit_resets_at,
     ).toBeUndefined();
     incoming(sock, contact, { conversation: 'back on' });
@@ -733,6 +740,112 @@ describe('messages in a group', () => {
     await repliesOn(sock);
     await expect(ordersFor.mock.results[0].value).resolves.toBeUndefined();
     ordersFor.mockRestore();
+  });
+});
+
+describe('the free trial', () => {
+  const CONTACT = '8801711111111@s.whatsapp.net';
+  const userOf = (userId: string) =>
+    prisma.user.findUniqueOrThrow({ where: { id: userId } });
+  const agents = () =>
+    new ChatAgentsService(
+      prisma as unknown as PrismaService,
+      {} as AgentFilesService,
+    );
+
+  it('sends the 100th reply, then stops the agent', async () => {
+    const { userId, id, sock } = await linkedNumber();
+    await prisma.user.update({
+      where: { id: userId },
+      data: { aiReplyCount: 99 },
+    });
+    incoming(sock, CONTACT, { conversation: 'hello' });
+    await repliesOn(sock);
+    expect(sock.sent).toHaveLength(1);
+    const user = await userOf(userId);
+    expect(user.aiReplyCount).toBe(100);
+    expect(user.trialEndedAt).not.toBeNull();
+    expect((await agentOn(id)).status).toBe('inactive');
+
+    incoming(sock, CONTACT, { conversation: 'still there?' });
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    expect(sock.sent).toHaveLength(1);
+  });
+
+  it('counts every reply on the account', async () => {
+    const { userId, sock } = await linkedNumber();
+    incoming(sock, CONTACT, { conversation: 'hello' });
+    await repliesOn(sock);
+    expect((await userOf(userId)).aiReplyCount).toBe(1);
+  });
+
+  it('stops an account already past it at the next message', async () => {
+    const { userId, id, sock } = await linkedNumber();
+    await prisma.user.update({
+      where: { id: userId },
+      data: { aiReplyCount: 140 },
+    });
+    incoming(sock, CONTACT, { conversation: 'hello' });
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    expect(sock.sent).toEqual([]);
+    expect((await userOf(userId)).trialEndedAt).not.toBeNull();
+    expect((await agentOn(id)).status).toBe('inactive');
+    // The message is still saved.
+    expect((await threadOf(id, CONTACT))?.messages).toHaveLength(1);
+  });
+
+  it('never counts or stops a paid account', async () => {
+    const { userId, id, sock } = await linkedNumber();
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        aiReplyCount: 100,
+        trialEndedAt: new Date(),
+        noReplyLimitUntil: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      },
+    });
+    incoming(sock, CONTACT, { conversation: 'hello' });
+    await repliesOn(sock);
+    expect(sock.sent).toHaveLength(1);
+    expect((await userOf(userId)).aiReplyCount).toBe(100);
+    const agent = await agentOn(id);
+    expect(agent.status).toBe('active');
+    expect((await agents().get(userId, agent.id)).free_trial_ended).toBe(
+      undefined,
+    );
+  });
+
+  it('hands the reply back when none goes out', async () => {
+    const { userId, sock } = await linkedNumber();
+    const failing = jest
+      .spyOn(sock, 'sendMessage' as never)
+      .mockRejectedValue(new Error('offline') as never);
+    incoming(sock, CONTACT, { conversation: 'hello' });
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    failing.mockRestore();
+    expect((await userOf(userId)).aiReplyCount).toBe(0);
+  });
+
+  it("keeps the agent off when it's switched on, and says why", async () => {
+    const { userId, id } = await linkedNumber();
+    await prisma.user.update({
+      where: { id: userId },
+      data: { aiReplyCount: 100, trialEndedAt: new Date() },
+    });
+    await prisma.chatAgent.updateMany({
+      where: { phoneNumberId: id },
+      data: { status: 'inactive' },
+    });
+    const agent = await agentOn(id);
+    const saved = await agents().update(userId, agent.id, {
+      agent: { status: 'active' },
+      prompt: { system_prompt: 'New prompt' },
+    });
+    expect(saved.agent.status).toBe('inactive');
+    expect(saved.prompt.system_prompt).toBe('New prompt');
+    expect(saved.free_trial_ended).toBe(true);
+    const [live] = await agents().liveStates(userId);
+    expect(live).toMatchObject({ status: 'inactive', free_trial_ended: true });
   });
 });
 

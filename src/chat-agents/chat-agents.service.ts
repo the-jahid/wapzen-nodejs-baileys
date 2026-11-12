@@ -12,6 +12,8 @@ import {
   DEFAULT_STATUS,
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_TEMPERATURE,
+  freeTrialEnded,
+  liveStateSelect,
   MAX_CHAT_AGENTS_PER_USER,
   normalizeIds,
   normalizeNullable,
@@ -53,11 +55,7 @@ export class ChatAgentsService {
   async liveStates(userId: string) {
     const rows = await this.prisma.chatAgent.findMany({
       where: { userId },
-      select: {
-        id: true,
-        hourlyReplyCount: true,
-        hourlyWindowStartedAt: true,
-      },
+      select: liveStateSelect,
     });
     return rows.map(toLiveState);
   }
@@ -92,7 +90,10 @@ export class ChatAgentsService {
       const phoneNumberId = normalizeNullable(a.phone_number_id);
       // An agent created with a number starts live unless the request says
       // otherwise: connecting a number is the activation.
-      const status = a.status || (phoneNumberId ? 'active' : DEFAULT_STATUS);
+      let status = a.status || (phoneNumberId ? 'active' : DEFAULT_STATUS);
+      if (status === 'active' && (await trialOver(tx, userId))) {
+        status = 'inactive';
+      }
       await ensureNameFree(tx, userId, name);
       await ensurePhoneNumberFree(tx, userId, phoneNumberId);
       const knowledgeBaseIds = await ownedKnowledgeBaseIds(
@@ -163,6 +164,12 @@ export class ChatAgentsService {
       }
       if (nextStatus === 'active' && !nextPhoneNumberId) {
         throw apiError(HttpStatus.CONFLICT, PHONE_NUMBER_REQUIRED);
+      }
+      // Quietly, not refused: the dashboard sends status active with every
+      // save once a number is picked, and the rest of the save must still go
+      // through. The resource says why (free_trial_ended).
+      if (nextStatus === 'active' && (await trialOver(tx, userId))) {
+        nextStatus = 'inactive';
       }
 
       if (a?.name !== undefined) {
@@ -268,6 +275,15 @@ export class ChatAgentsService {
       throw apiError(HttpStatus.INTERNAL_SERVER_ERROR, fallback);
     }
   }
+}
+
+// A free account that used up its trial can't take an agent live.
+async function trialOver(tx: Tx, userId: string) {
+  const user = await tx.user.findUnique({
+    where: { id: userId },
+    select: { noReplyLimitUntil: true, trialEndedAt: true },
+  });
+  return !!user && freeTrialEnded(user);
 }
 
 // The checks below run inside the transaction so the API can name the

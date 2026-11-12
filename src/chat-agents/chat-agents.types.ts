@@ -33,6 +33,23 @@ export const HOURLY_REPLY_LIMIT = 50;
 export const GROUP_HOURLY_REPLY_LIMIT = 50;
 const HOUR_MS = 60 * 60 * 1000;
 
+// A free account's AI replies in all, across its agents. When they're used up
+// its agents go inactive and stay so, and the dashboard shows the paid-plan
+// card (free_trial_ended). An account on a paid plan isn't counted.
+export const FREE_TRIAL_REPLIES = 100;
+
+type PlanUser = { noReplyLimitUntil: Date | null; trialEndedAt: Date | null };
+
+// A paid plan is users.no_reply_limit_until in the future, set by hand.
+export function onPaidPlan(user: Pick<PlanUser, 'noReplyLimitUntil'>) {
+  const until = user.noReplyLimitUntil;
+  return until != null && until.getTime() > Date.now();
+}
+
+export function freeTrialEnded(user: PlanUser) {
+  return user.trialEndedAt != null && !onPaidPlan(user);
+}
+
 // The prompt is resent with every reply, so its length is capped (Go
 // MaxSystemPromptChars). Counted in code points after trimming, as stored.
 export const MAX_SYSTEM_PROMPT_CHARS = 8000;
@@ -85,6 +102,9 @@ export type ChatAgentResource = {
   // Read-only. Only present while the agent has sent HOURLY_REPLY_LIMIT
   // replies this hour: when it starts answering again.
   hourly_limit_resets_at?: string;
+  // Read-only. Only present (true) once the account's free trial is used up
+  // and it has no paid plan: the agent can't go live.
+  free_trial_ended?: boolean;
 };
 
 // What a resource needs beyond the row: attached tools and knowledge bases, in
@@ -98,12 +118,18 @@ export const resourceInclude = {
     select: { toolId: true, tool: { select: { key: true } } },
     orderBy: [{ createdAt: 'asc' }, { toolId: 'asc' }],
   },
+  user: { select: planSelect() },
 } satisfies Prisma.ChatAgentInclude;
+
+function planSelect() {
+  return { noReplyLimitUntil: true, trialEndedAt: true } as const;
+}
 
 export function toResource(
   row: ChatAgent & {
     knowledgeBases: { knowledgeBaseId: string }[];
     tools: { toolId: string; tool: { key: string | null } }[];
+    user: PlanUser;
   },
 ): ChatAgentResource {
   return {
@@ -141,15 +167,37 @@ export function toResource(
       website_url: row.websiteUrl,
     },
     ...hourlyLimit(row),
+    ...trialState(row.user),
   };
 }
 
+export const liveStateSelect = {
+  id: true,
+  status: true,
+  hourlyReplyCount: true,
+  hourlyWindowStartedAt: true,
+  user: { select: planSelect() },
+} satisfies Prisma.ChatAgentSelect;
+
 // What the dashboard re-reads about an agent while it's on screen, without the
-// prompt and everything else it already has.
+// prompt and everything else it already has. The status comes along so an
+// agent stopped at the end of the trial shows as stopped.
 export function toLiveState(
-  row: Pick<ChatAgent, 'id' | 'hourlyReplyCount' | 'hourlyWindowStartedAt'>,
+  row: Pick<
+    ChatAgent,
+    'id' | 'status' | 'hourlyReplyCount' | 'hourlyWindowStartedAt'
+  > & { user: PlanUser },
 ) {
-  return { id: row.id, ...hourlyLimit(row) };
+  return {
+    id: row.id,
+    status: row.status,
+    ...hourlyLimit(row),
+    ...trialState(row.user),
+  };
+}
+
+function trialState(user: PlanUser) {
+  return freeTrialEnded(user) ? { free_trial_ended: true } : {};
 }
 
 function hourlyLimit(
