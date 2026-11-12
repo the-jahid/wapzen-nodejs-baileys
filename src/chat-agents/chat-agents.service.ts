@@ -75,9 +75,13 @@ export class ChatAgentsService {
       // Lock the user row so two concurrent creates can't both see room for
       // one more agent.
       await tx.$queryRaw`SELECT 1 FROM users WHERE id = ${userId} FOR UPDATE`;
+      const owner = await tx.user.findUnique({
+        where: { id: userId },
+        select: { maxChatAgents: true },
+      });
       if (
         (await tx.chatAgent.count({ where: { userId } })) >=
-        MAX_CHAT_AGENTS_PER_USER
+        (owner?.maxChatAgents ?? MAX_CHAT_AGENTS_PER_USER)
       ) {
         throw apiError(
           HttpStatus.FORBIDDEN,

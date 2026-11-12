@@ -24,6 +24,8 @@ model User {
   // (HOURLY_REPLY_LIMIT and GROUP_HOURLY_REPLY_LIMIT). Set by hand for a
   // single account; null, or a time in the past, means the normal limits.
   noReplyLimitUntil DateTime? @map("no_reply_limit_until") @db.Timestamptz
+  // Chat agents this account may hold; null means MAX_CHAT_AGENTS_PER_USER.
+  maxChatAgents Int? @map("max_chat_agents")
   // While noReplyLimitUntil is in the future the account is on a paid plan.
   // Otherwise it's on the free trial: FREE_TRIAL_REPLIES AI replies in all,
   // counted here; when they're used up trialEndedAt is stamped and its agents
