@@ -10,6 +10,7 @@ import { AgentFilesService } from '../agent-files/agent-files.service';
 import { ClerkAuthGuard } from '../auth/auth.guard';
 import { ChatAgentsController } from '../chat-agents/chat-agents.controller';
 import { ChatAgentsService } from '../chat-agents/chat-agents.service';
+import { HOURLY_LIMITS_ON } from '../chat-agents/chat-agents.types';
 import { PrismaClient } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChatResponderService } from '../whatsapp/chat-responder.service';
@@ -305,47 +306,53 @@ describe("an agent's live state", () => {
     expect(await live()).toEqual([{ id: agentId, status: 'active' }]);
   });
 
-  it('says when an agent at its limit answers again', async () => {
-    const { agentId } = await account();
-    const started = new Date(Date.now() - HOUR / 2);
-    await prisma.chatAgent.update({
-      where: { id: agentId },
-      data: { hourlyReplyCount: 50, hourlyWindowStartedAt: started },
-    });
-    expect(await live()).toEqual([
-      {
-        id: agentId,
-        status: 'active',
-        hourly_limit_resets_at: new Date(
-          started.getTime() + HOUR,
-        ).toISOString(),
-      },
-    ]);
-  });
+  (HOURLY_LIMITS_ON ? it : it.skip)(
+    'says when an agent at its limit answers again',
+    async () => {
+      const { agentId } = await account();
+      const started = new Date(Date.now() - HOUR / 2);
+      await prisma.chatAgent.update({
+        where: { id: agentId },
+        data: { hourlyReplyCount: 50, hourlyWindowStartedAt: started },
+      });
+      expect(await live()).toEqual([
+        {
+          id: agentId,
+          status: 'active',
+          hourly_limit_resets_at: new Date(
+            started.getTime() + HOUR,
+          ).toISOString(),
+        },
+      ]);
+    },
+  );
 
-  it('matches what the full agent says, at the limit and past it', async () => {
-    const { agentId } = await account();
-    const full = async () =>
-      (
-        (await http().get(`${AGENTS}/${agentId}`).expect(200)).body as {
-          data: Live;
-        }
-      ).data.hourly_limit_resets_at;
+  (HOURLY_LIMITS_ON ? it : it.skip)(
+    'matches what the full agent says, at the limit and past it',
+    async () => {
+      const { agentId } = await account();
+      const full = async () =>
+        (
+          (await http().get(`${AGENTS}/${agentId}`).expect(200)).body as {
+            data: Live;
+          }
+        ).data.hourly_limit_resets_at;
 
-    await prisma.chatAgent.update({
-      where: { id: agentId },
-      data: { hourlyReplyCount: 50, hourlyWindowStartedAt: new Date() },
-    });
-    expect((await live())[0].hourly_limit_resets_at).toBe(await full());
-    expect(await full()).toBeDefined();
+      await prisma.chatAgent.update({
+        where: { id: agentId },
+        data: { hourlyReplyCount: 50, hourlyWindowStartedAt: new Date() },
+      });
+      expect((await live())[0].hourly_limit_resets_at).toBe(await full());
+      expect(await full()).toBeDefined();
 
-    await prisma.chatAgent.update({
-      where: { id: agentId },
-      data: { hourlyWindowStartedAt: new Date(Date.now() - 2 * HOUR) },
-    });
-    expect((await live())[0].hourly_limit_resets_at).toBeUndefined();
-    expect(await full()).toBeUndefined();
-  });
+      await prisma.chatAgent.update({
+        where: { id: agentId },
+        data: { hourlyWindowStartedAt: new Date(Date.now() - 2 * HOUR) },
+      });
+      expect((await live())[0].hourly_limit_resets_at).toBeUndefined();
+      expect(await full()).toBeUndefined();
+    },
+  );
 
   it('leaves the prompt and other settings out', async () => {
     await account();

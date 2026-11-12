@@ -13,6 +13,7 @@ import type { OutgoingFile } from '../agent-files/agent-files.types';
 import {
   FREE_TRIAL_REPLIES,
   GROUP_HOURLY_REPLY_LIMIT,
+  HOURLY_LIMITS_ON,
   HOURLY_REPLY_LIMIT,
   onPaidPlan,
 } from '../chat-agents/chat-agents.types';
@@ -613,7 +614,11 @@ export class ChatResponderService {
     if (onPaidPlan(agent.user)) return;
     await this.prisma.user
       .updateMany({
-        where: { id: agent.userId, trialEndedAt: null, aiReplyCount: { gt: 0 } },
+        where: {
+          id: agent.userId,
+          trialEndedAt: null,
+          aiReplyCount: { gt: 0 },
+        },
         data: { aiReplyCount: { decrement: 1 } },
       })
       .catch(() => undefined);
@@ -653,7 +658,7 @@ export class ChatResponderService {
   // counted in one and refused by the other. False at either limit.
   private async claimReply(agent: ReplyingAgent, inGroup: boolean) {
     // Not counted at all, so the dashboard never shows the agent paused.
-    if (noReplyLimit(agent)) return true;
+    if (!HOURLY_LIMITS_ON || noReplyLimit(agent)) return true;
     try {
       const [claimed] = await this.prisma.$queryRaw<
         { count: number; group_count: number }[]
@@ -711,7 +716,7 @@ export class ChatResponderService {
 
   // Hands back a reply claimed for a message that got no answer.
   private async releaseReply(agent: ReplyingAgent, inGroup: boolean) {
-    if (noReplyLimit(agent)) return;
+    if (!HOURLY_LIMITS_ON || noReplyLimit(agent)) return;
     await this.prisma.chatAgent
       .updateMany({
         where: {

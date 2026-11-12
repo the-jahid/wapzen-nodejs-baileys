@@ -31,6 +31,10 @@ export const HOURLY_REPLY_LIMIT = 50;
 // restarted; the agent then goes quiet in groups only and keeps answering
 // private chats, so the dashboard isn't told it has stopped.
 export const GROUP_HOURLY_REPLY_LIMIT = 50;
+// Both hourly limits are off for every account (2026-11-12): replies aren't
+// counted, nothing is refused and no agent shows as paused. Set true to bring
+// them back as described above.
+export const HOURLY_LIMITS_ON = false;
 const HOUR_MS = 60 * 60 * 1000;
 
 // A free account's AI replies in all, across its agents. When they're used up
@@ -203,7 +207,7 @@ function trialState(user: PlanUser) {
 function hourlyLimit(
   row: Pick<ChatAgent, 'hourlyReplyCount' | 'hourlyWindowStartedAt'>,
 ) {
-  if (row.hourlyReplyCount < HOURLY_REPLY_LIMIT) return {};
+  if (!HOURLY_LIMITS_ON || row.hourlyReplyCount < HOURLY_REPLY_LIMIT) return {};
   const resetsAt = (row.hourlyWindowStartedAt?.getTime() ?? 0) + HOUR_MS;
   if (resetsAt <= Date.now()) return {};
   return { hourly_limit_resets_at: new Date(resetsAt).toISOString() };
