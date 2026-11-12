@@ -36,7 +36,7 @@ const HOUR_MS = 60 * 60 * 1000;
 // A free account's AI replies in all, across its agents. When they're used up
 // its agents go inactive and stay so, and the dashboard shows the paid-plan
 // card (free_trial_ended). An account on a paid plan isn't counted.
-export const FREE_TRIAL_REPLIES = 200;
+export const FREE_TRIAL_REPLIES = 400;
 
 type PlanUser = { noReplyLimitUntil: Date | null; trialEndedAt: Date | null };
 
