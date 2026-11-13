@@ -17,12 +17,12 @@ import { primaryEmail } from '../webhooks/webhooks.service';
 import { ClerkClient } from './clerk';
 
 type AuthedRequest = Request & { user?: User };
+
 // How long a users row is trusted before it is read again. Only its id, email
 // and blocked_at are used from here, so the cost is that blocking or
 // unblocking an account takes up to this long to show.
 const USER_ROW_MS = 30_000;
 const MAX_KNOWN_USERS = 5_000;
-
 
 // Mirrors the Go server's RequireUser: the dashboard sends its Clerk session
 // token as "Authorization: Bearer <token>". The token's Clerk user is mapped
@@ -33,8 +33,8 @@ const MAX_KNOWN_USERS = 5_000;
 @Injectable()
 export class ClerkAuthGuard implements CanActivate {
   private readonly logger = new Logger(ClerkAuthGuard.name);
-  private readonly users = new Map<string, { user: User; at: number }>();
   private readonly clerk: ClerkClient;
+  private readonly users = new Map<string, { user: User; at: number }>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -87,10 +87,11 @@ export class ClerkAuthGuard implements CanActivate {
     req.user = user;
     return true;
   }
+
   // The row is read from the database at most once per USER_ROW_MS for each
   // signed-in user. An open dashboard sends a request every few seconds, and
   // each one used to read it again.
-
+  private async resolveUser(clerkId: string): Promise<User> {
     const known = this.users.get(clerkId);
     if (known && Date.now() - known.at < USER_ROW_MS) return known.user;
     const user = await this.readUser(clerkId);
@@ -100,7 +101,6 @@ export class ClerkAuthGuard implements CanActivate {
   }
 
   private async readUser(clerkId: string): Promise<User> {
-  private async resolveUser(clerkId: string): Promise<User> {
     const existing = await this.prisma.user.findUnique({
       where: { oauthId: clerkId },
     });
