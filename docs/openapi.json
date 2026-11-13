@@ -241,6 +241,10 @@
                 "description": "How the agent should take orders. Added to its prompt while ordering is on. At most 4000 characters.",
                 "type": "string"
               },
+              "order_notify_phone": {
+                "description": "Optional WhatsApp number (with country code, or local to the agent's number) that the agent messages from its own number whenever it places or changes an order. Empty = no one is told. At most 40 characters, stored as typed.",
+                "type": "string"
+              },
               "orders_on": {
                 "description": "Read-only. True when the toggle is on and Take Order is attached.",
                 "type": "boolean"
@@ -684,6 +688,10 @@
               },
               "order_instructions": {
                 "description": "How the agent should take orders. Added to its prompt while ordering is on. At most 4000 characters.",
+                "type": "string"
+              },
+              "order_notify_phone": {
+                "description": "Optional WhatsApp number (with country code, or local to the agent's number) that the agent messages from its own number whenever it places or changes an order. Empty = no one is told. At most 40 characters, stored as typed.",
                 "type": "string"
               }
             },
@@ -2456,6 +2464,10 @@
               },
               "order_instructions": {
                 "description": "How the agent should take orders. Added to its prompt while ordering is on. At most 4000 characters.",
+                "type": "string"
+              },
+              "order_notify_phone": {
+                "description": "Optional WhatsApp number (with country code, or local to the agent's number) that the agent messages from its own number whenever it places or changes an order. Empty = no one is told. At most 40 characters, stored as typed.",
                 "type": "string"
               }
             },

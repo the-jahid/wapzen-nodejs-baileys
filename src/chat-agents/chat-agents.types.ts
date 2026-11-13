@@ -63,6 +63,9 @@ export const MAX_ORDER_INSTRUCTIONS_CHARS = 4000;
 // still typing it, so only its length is checked here, and an address that
 // doesn't parse simply gives the agent no website to read.
 export const MAX_WEBSITE_URL_CHARS = 500;
+// The number told about orders is stored as typed too, for the same reason; one
+// that isn't a phone number just means no one is told.
+export const MAX_ORDER_NOTIFY_PHONE_CHARS = 40;
 
 // The built-in Take Order tool (tools.key).
 const ORDER_TOOL_KEY = 'take_order';
@@ -78,7 +81,11 @@ export type ChatAgentInput = {
   prompt?: { system_prompt?: string };
   knowledge_base?: { knowledge_base_ids?: string[] };
   tools?: { tool_ids?: string[] };
-  order?: { order_enabled?: boolean; order_instructions?: string };
+  order?: {
+    order_enabled?: boolean;
+    order_instructions?: string;
+    order_notify_phone?: string;
+  };
   media?: { voice_messages_enabled?: boolean; images_enabled?: boolean };
   website?: { website_enabled?: boolean; website_url?: string };
 };
@@ -97,6 +104,9 @@ export type ChatAgentResource = {
   order: {
     order_enabled: boolean;
     order_instructions: string;
+    // Optional WhatsApp number told about every order placed or changed, as
+    // typed; '' = no one.
+    order_notify_phone: string;
     orders_on: boolean;
   };
   // Whether the agent answers voice messages and reads the photos it's sent.
@@ -158,6 +168,7 @@ export function toResource(
     order: {
       order_enabled: row.orderEnabled,
       order_instructions: row.orderInstructions,
+      order_notify_phone: row.orderNotifyPhone,
       orders_on:
         row.orderEnabled &&
         row.tools.some((t) => t.tool.key === ORDER_TOOL_KEY),
@@ -233,7 +244,11 @@ const SECTIONS: Record<
   prompt: { system_prompt: 'string' },
   knowledge_base: { knowledge_base_ids: 'ids' },
   tools: { tool_ids: 'ids' },
-  order: { order_enabled: 'boolean', order_instructions: 'string' },
+  order: {
+    order_enabled: 'boolean',
+    order_instructions: 'string',
+    order_notify_phone: 'string',
+  },
   media: { voice_messages_enabled: 'boolean', images_enabled: 'boolean' },
   website: { website_enabled: 'boolean', website_url: 'string' },
   // Removed setting. Still accepted and ignored, so a dashboard page opened
@@ -294,6 +309,7 @@ export function validateCreate(req: ChatAgentInput): void {
   }
   validatePromptLength(system);
   validateOrderInstructions(req.order?.order_instructions);
+  validateOrderNotifyPhone(req.order?.order_notify_phone);
   validateWebsiteUrl(req.website?.website_url);
 }
 
@@ -313,6 +329,7 @@ export function validateUpdate(req: ChatAgentInput): void {
     req.tools?.tool_ids !== undefined ||
     req.order?.order_enabled !== undefined ||
     req.order?.order_instructions !== undefined ||
+    req.order?.order_notify_phone !== undefined ||
     req.media?.voice_messages_enabled !== undefined ||
     req.media?.images_enabled !== undefined ||
     req.website?.website_enabled !== undefined ||
@@ -331,7 +348,16 @@ export function validateUpdate(req: ChatAgentInput): void {
   }
   validatePromptLength(system);
   validateOrderInstructions(req.order?.order_instructions);
+  validateOrderNotifyPhone(req.order?.order_notify_phone);
   validateWebsiteUrl(req.website?.website_url);
+}
+
+function validateOrderNotifyPhone(phone: string | undefined) {
+  if (phone && [...phone.trim()].length > MAX_ORDER_NOTIFY_PHONE_CHARS) {
+    throw badRequest(
+      `order.order_notify_phone must be at most ${MAX_ORDER_NOTIFY_PHONE_CHARS} characters`,
+    );
+  }
 }
 
 function validateWebsiteUrl(url: string | undefined) {

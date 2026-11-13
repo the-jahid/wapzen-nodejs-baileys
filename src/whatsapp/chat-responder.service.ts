@@ -36,7 +36,9 @@ import {
   requiredDetails,
   type OrderField,
 } from '../orders/order-tool';
-import { OrdersService } from '../orders/orders.service';
+import { orderNotice } from '../orders/order-notice';
+import { OrdersService, type OrderResult } from '../orders/orders.service';
+import { toE164 } from '../orders/orders.types';
 import { PrismaService } from '../prisma/prisma.service';
 import type { ChatWebsite } from '../tools/chat-toolbox';
 import { readWebsitePage, siteRoot } from '../website/website-reader';
@@ -127,6 +129,9 @@ export type IncomingChat = {
   text: string;
   media?: IncomingMedia;
   send: (text: string) => Promise<unknown>;
+  // Sends a text from the same number to someone else, by phone number (E.164),
+  // such as the owner's order alerts. Absent in groups, which take no orders.
+  sendTo?: (phone: string, text: string) => Promise<unknown>;
   sendFile: (file: OutgoingFile) => Promise<unknown>;
   setTyping: (typing: boolean) => Promise<unknown>;
 };
@@ -750,8 +755,8 @@ export class ChatResponderService {
     ]);
     return {
       phoneKnown: !!peerPhone,
-      place: (args, fields) =>
-        this.orders.place(
+      place: async (args, fields) => {
+        const result = await this.orders.place(
           {
             userId: agent.userId,
             ownerEmail: agent.user.email,
@@ -765,8 +770,45 @@ export class ChatResponderService {
           },
           args,
           fields,
-        ),
+        );
+        this.alertOwner(agent, chat, result);
+        return result;
+      },
     };
+  }
+
+  // Tells the owner's order-alert number about an order just placed or
+  // changed, from the agent's own number. It runs beside the reply, so the
+  // customer never waits for it, and a failure is only logged: the order
+  // stands either way and is on the dashboard. An order the chat already had
+  // (already_placed) changed nothing, so it isn't sent again.
+  private alertOwner(
+    agent: ReplyingAgent,
+    chat: IncomingChat,
+    result: OrderResult,
+  ) {
+    if (!result.success || result.already_placed || !chat.sendTo) return;
+    if (!agent.orderNotifyPhone.trim()) return;
+    const to = toE164(agent.orderNotifyPhone, agent.phoneNumber?.phoneNumber);
+    const label = `${agent.user.email} - #${result.order_number} by ${agent.agentName}`;
+    if (!to) {
+      activity(`order alert skipped (not a phone number): ${label}`);
+      return;
+    }
+    const sendTo = chat.sendTo;
+    void (async () => {
+      const order = await this.orders.get(agent.userId, result.order_id);
+      await sendTo(
+        to,
+        orderNotice(order, {
+          updated: !!result.updated,
+          agentName: agent.agentName,
+        }),
+      );
+      activity(`order alert sent: ${label}`);
+    })().catch((err: Error) =>
+      activity(`order alert failed: ${label}: ${err.message}`),
+    );
   }
 
   // The files this agent can send in this chat. They live in their own database,

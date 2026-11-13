@@ -527,6 +527,21 @@ export class WhatsAppService
     }
   }
 
+  // Sends a text to a phone number (E.164) rather than to a chat. WhatsApp is
+  // asked for the number's account first: it knows the JID a number really
+  // uses, and a number that isn't on WhatsApp would otherwise swallow the
+  // message without a word. If that lookup itself fails, the plain JID is used.
+  private async sendToNumber(sock: WASocket, phone: string, text: string) {
+    const digits = phone.replace(/D/g, '');
+    const found = await sock.onWhatsApp(`+${digits}`).catch(() => undefined);
+    if (found && !found.some((hit) => hit.exists)) {
+      throw new Error(`+${digits} is not on WhatsApp`);
+    }
+    const jid =
+      found?.find((hit) => hit.exists)?.jid ?? `${digits}@s.whatsapp.net`;
+    return this.sendFrom(sock, jid, text);
+  }
+
   private sendFrom(sock: WASocket, jid: string, text: string) {
     const trace = this.traces.get(sock);
     if (trace) trace.sentAt = Date.now();
@@ -1064,6 +1079,7 @@ export class WhatsAppService
         text,
         media,
         send: (reply) => this.sendFrom(sock, jid, reply),
+        sendTo: (phone, text) => this.sendToNumber(sock, phone, text),
         sendFile: (file) => this.sendFileFrom(id, sock, jid, file),
         setTyping: (typing) =>
           sock.sendPresenceUpdate(typing ? 'composing' : 'paused', jid),

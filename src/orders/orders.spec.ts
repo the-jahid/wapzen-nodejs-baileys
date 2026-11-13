@@ -652,6 +652,7 @@ describe('order_enabled', () => {
     expect(untouched.order).toEqual({
       order_enabled: false,
       order_instructions: '',
+      order_notify_phone: '',
       orders_on: false,
     });
 
@@ -659,11 +660,13 @@ describe('order_enabled', () => {
       order: {
         order_enabled: true,
         order_instructions: ' Dhaka only <b>x</b> ',
+        order_notify_phone: ' +880 1711-111111 ',
       },
     });
     expect(toggled.order).toEqual({
       order_enabled: true,
       order_instructions: 'Dhaka only x',
+      order_notify_phone: '+880 1711-111111',
       orders_on: false,
     });
 

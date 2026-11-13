@@ -67,6 +67,9 @@ model ChatAgent {
   orderEnabled  Boolean  @default(false) @map("order_enabled")
   // How the owner wants orders taken, added to the prompt while ordering is on.
   orderInstructions String @default("") @map("order_instructions")
+  // A WhatsApp number told about each order the agent places or changes, sent
+  // from the agent's own number. Optional and stored as typed; "" = no one.
+  orderNotifyPhone String @default("") @map("order_notify_phone")
   // Whether the agent answers voice messages (transcribed to text first) and
   // reads the photos people send. Off: voice messages go unanswered and a
   // photo is answered by its caption alone, as before these existed.

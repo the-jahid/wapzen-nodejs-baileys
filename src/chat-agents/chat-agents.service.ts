@@ -122,6 +122,7 @@ export class ChatAgentsService {
             (await includesTakeOrder(tx, toolIds)) ||
             (req.order?.order_enabled ?? false),
           orderInstructions: cleanText(req.order?.order_instructions ?? ''),
+          orderNotifyPhone: req.order?.order_notify_phone?.trim() ?? '',
           voiceMessagesEnabled: req.media?.voice_messages_enabled ?? true,
           imagesEnabled: req.media?.images_enabled ?? true,
           websiteEnabled: req.website?.website_enabled ?? false,
@@ -198,6 +199,9 @@ export class ChatAgentsService {
       }
       if (req.order?.order_instructions !== undefined) {
         data.orderInstructions = cleanText(req.order.order_instructions);
+      }
+      if (req.order?.order_notify_phone !== undefined) {
+        data.orderNotifyPhone = req.order.order_notify_phone.trim();
       }
       if (req.media?.voice_messages_enabled !== undefined) {
         data.voiceMessagesEnabled = req.media.voice_messages_enabled;
