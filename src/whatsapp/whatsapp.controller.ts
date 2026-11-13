@@ -6,6 +6,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiExcludeController } from '@nestjs/swagger';
@@ -81,10 +82,19 @@ export class WhatsAppController {
   }
 
   // Poll this during a login: the QR code refreshes, and status becomes
-  // connected once the phone links.
+  // connected once the phone links. have_qr is the qr_id the caller was last
+  // given; while the code is still that one, qr_code is left out.
   @Get(':phone_number_id')
-  async get(@CurrentUser() user: User, @Param('phone_number_id') id: string) {
-    const data = await this.whatsapp.get(user.id, id.trim());
+  async get(
+    @CurrentUser() user: User,
+    @Param('phone_number_id') id: string,
+    @Query('have_qr') haveQr?: string,
+  ) {
+    const data = await this.whatsapp.get(
+      user.id,
+      id.trim(),
+      typeof haveQr === 'string' ? haveQr : undefined,
+    );
     return {
       success: true,
       message: 'Phone number retrieved successfully',

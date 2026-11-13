@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { HttpStatus } from '@nestjs/common';
 import QRCode from 'qrcode';
 import type { PhoneNumber } from '../generated/prisma/client';
@@ -39,6 +40,9 @@ export type PhoneNumberResource = {
   wa_jid: string | null;
   status: string;
   qr_code?: string;
+  // Names the QR code on show. A dashboard that already holds its picture says
+  // so (have_qr) and gets the answer without qr_code.
+  qr_id?: string;
   qr_expires_in_ms?: number;
   pairing_code?: string;
   pairing_expires_in_ms?: number;
@@ -47,9 +51,13 @@ export type PhoneNumberResource = {
   updated_at: string;
 };
 
+// haveQr is the qr_id of the picture the caller already holds. The dashboard
+// asks every 2 seconds while a login waits, and the picture, 3 KB even
+// compressed, only changes every 20 to 60.
 export async function toResource(
   row: PhoneNumber,
   login: LoginState | undefined,
+  haveQr?: string,
 ): Promise<PhoneNumberResource> {
   const resource: PhoneNumberResource = {
     id: row.id,
@@ -75,7 +83,14 @@ export async function toResource(
   } else if (row.qrCode && login.qrAt) {
     // The dashboard puts this straight into an <img>, so it's a PNG data URL
     // of the QR text WhatsApp handed out.
-    resource.qr_code = await QRCode.toDataURL(row.qrCode, { margin: 1 });
+    // Made from the code itself, so an id can never name another picture.
+    resource.qr_id = createHash('sha256')
+      .update(row.qrCode)
+      .digest('base64url')
+      .slice(0, 16);
+    if (haveQr !== resource.qr_id) {
+      resource.qr_code = await QRCode.toDataURL(row.qrCode, { margin: 1 });
+    }
     const lifetime = login.qrCount <= 1 ? FIRST_QR_MS : NEXT_QR_MS;
     resource.qr_expires_in_ms = Math.max(0, login.qrAt + lifetime - now);
   }

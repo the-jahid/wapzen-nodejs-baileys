@@ -12,6 +12,8 @@ import { ChatAgentsController } from '../chat-agents/chat-agents.controller';
 import { ChatAgentsService } from '../chat-agents/chat-agents.service';
 import { HOURLY_LIMITS_ON } from '../chat-agents/chat-agents.types';
 import { PrismaClient } from '../generated/prisma/client';
+import { OrdersController } from '../orders/orders.controller';
+import { OrdersService } from '../orders/orders.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChatResponderService } from '../whatsapp/chat-responder.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
@@ -82,10 +84,15 @@ beforeAll(async () => {
     }),
   });
   const moduleRef = await Test.createTestingModule({
-    controllers: [ChatConversationsController, ChatAgentsController],
+    controllers: [
+      ChatConversationsController,
+      ChatAgentsController,
+      OrdersController,
+    ],
     providers: [
       ChatConversationsService,
       ChatAgentsService,
+      OrdersService,
       { provide: PrismaService, useValue: prisma },
       { provide: WhatsAppService, useValue: {} },
       { provide: ChatResponderService, useValue: {} },
@@ -150,6 +157,59 @@ async function version(query = '') {
 
 // Long enough that a write lands on a later millisecond than the one before.
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+describe("the orders' version", () => {
+  const ORDERS = '/v1/dashboard/orders';
+  type Version = { data: { version: string; new_orders: number } };
+
+  async function ordersVersion() {
+    const res = await http().get(`${ORDERS}/version`).expect(200);
+    return (res.body as Version).data;
+  }
+
+  async function order(userId: string, orderNumber: number) {
+    return prisma.order.create({
+      data: {
+        userId,
+        orderNumber,
+        customerName: 'Ayesha Rahman',
+        phone: '+8801712345678',
+        description: '2 large pizzas',
+      },
+    });
+  }
+
+  it('is what the /:order_id route would otherwise read as an order id', async () => {
+    await account();
+    expect(await ordersVersion()).toEqual({ version: '0:0', new_orders: 0 });
+  });
+
+  it('counts new orders the way the list does, and moves when one changes', async () => {
+    const { userId } = await account();
+    const first = await order(userId, 1001);
+    await order(userId, 1002);
+    const before = await ordersVersion();
+    expect(before.new_orders).toBe(2);
+    expect(await ordersVersion()).toEqual(before);
+
+    const listed = await http().get(`${ORDERS}?page=1&limit=1`).expect(200);
+    expect(
+      (listed.body as { meta: { new_orders: number } }).meta.new_orders,
+    ).toBe(before.new_orders);
+
+    await tick();
+    await http()
+      .patch(`${ORDERS}/${first.id}`)
+      .send({ status: 'completed' })
+      .expect(200);
+    const after = await ordersVersion();
+    expect(after.version).not.toBe(before.version);
+    expect(after.new_orders).toBe(1);
+
+    await http().delete(`${ORDERS}/${first.id}`).expect(200);
+    expect((await ordersVersion()).version).not.toBe(after.version);
+  });
+});
 
 describe("the inbox's version", () => {
   it('stays the same while nothing changes', async () => {

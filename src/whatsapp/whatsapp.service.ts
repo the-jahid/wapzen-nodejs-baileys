@@ -278,9 +278,14 @@ export class WhatsAppService
     return Promise.all(rows.map((row) => toResource(row, undefined)));
   }
 
-  async get(userId: string, id: string): Promise<PhoneNumberResource> {
+  // haveQr: see toResource.
+  async get(
+    userId: string,
+    id: string,
+    haveQr?: string,
+  ): Promise<PhoneNumberResource> {
     const row = await this.owned(userId, this.relinked.get(id) ?? id);
-    return toResource(row, this.logins.get(row.id));
+    return toResource(row, this.logins.get(row.id), haveQr);
   }
 
   // A fresh login on a new row. Resolves once WhatsApp hands out the first QR

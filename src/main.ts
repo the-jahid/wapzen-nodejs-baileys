@@ -45,6 +45,8 @@ async function bootstrap() {
   // Render's edge compresses what browsers get, but its docs don't say whether
   // bandwidth is counted before or after that, so responses leave here small.
   app.use(compression());
+  // Sent with every response and read by nobody.
+  app.disable('x-powered-by');
   app.enableShutdownHooks();
   // The dashboard (frontend, another origin) calls this API from the browser.
   // It reads X-Account-Blocked to show its blocked-account screen.

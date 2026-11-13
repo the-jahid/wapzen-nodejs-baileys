@@ -240,6 +240,23 @@ export class OrdersService {
     return { total, newOrders, orders: rows.map(toResource) };
   }
 
+  // What a page that re-reads its orders on a timer asks first. version
+  // changes whenever any listing of the account's orders would: an order
+  // placed, changed or deleted. newOrders is the count for the badge, which
+  // used to cost a read of the list.
+  async version(userId: string) {
+    const [row] = await this.prisma.$queryRaw<
+      { total: number; new_orders: number; latest: string }[]
+    >`SELECT count(*)::int AS total,
+        (count(*) FILTER (WHERE status = 'new'))::int AS new_orders,
+        coalesce((extract(epoch FROM max(updated_at)) * 1000000)::bigint, 0)::text AS latest
+      FROM orders WHERE user_id = ${userId}`;
+    return {
+      version: `${row.total}:${row.latest}`,
+      newOrders: row.new_orders,
+    };
+  }
+
   async get(userId: string, id: string) {
     const row = await this.prisma.order.findFirst({
       where: { id, userId },

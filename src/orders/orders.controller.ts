@@ -84,6 +84,18 @@ export class OrdersController {
     return this.orders.exportCsv(user.id, filter);
   }
 
+  // Declared before :order_id too. The dashboard asks this on its timer, and
+  // reads the list only when the version has changed.
+  @Get('version')
+  async version(@CurrentUser() user: User) {
+    const { version, newOrders } = await this.orders.version(user.id);
+    return {
+      success: true,
+      message: 'Orders version retrieved successfully',
+      data: { version, new_orders: newOrders },
+    };
+  }
+
   @Get(':order_id')
   async get(@CurrentUser() user: User, @Param('order_id') id: string) {
     return {

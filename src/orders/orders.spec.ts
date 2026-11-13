@@ -734,6 +734,50 @@ describe('workspace isolation', () => {
     expect(mine.orders[0].agent_name).toBe('owner agent');
   });
 
+  it('gives a version that changes only when the account’s own orders do', async () => {
+    const account = await newAccount('versioned');
+    const context = () =>
+      contextFor(account.user.id, account.agent.id, account.phone.id);
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+    const empty = await orders.version(account.user.id);
+    expect(empty).toEqual({ version: '0:0', newOrders: 0 });
+
+    const placed = await orders.place(context(), argsFor());
+    if (!placed.success) throw new Error(placed.error);
+    const one = await orders.version(account.user.id);
+    expect(one.version).not.toBe(empty.version);
+    expect(one.newOrders).toBe(1);
+    expect(await orders.version(account.user.id)).toEqual(one);
+
+    // Somebody else's order is not this account's business.
+    await orders.place(
+      contextFor(stranger.user.id, stranger.agent.id, stranger.phone.id),
+      argsFor({ customer_name: 'Third Person' }),
+    );
+    expect(await orders.version(account.user.id)).toEqual(one);
+
+    await tick();
+    await orders.update(account.user.id, placed.order_id, {
+      status: 'confirmed',
+    });
+    const confirmed = await orders.version(account.user.id);
+    expect(confirmed.version).not.toBe(one.version);
+    expect(confirmed.newOrders).toBe(0);
+
+    await tick();
+    await orders.update(account.user.id, placed.order_id, {
+      internalNote: 'call before delivery',
+    });
+    const noted = await orders.version(account.user.id);
+    expect(noted.version).not.toBe(confirmed.version);
+
+    await orders.remove(account.user.id, placed.order_id);
+    const removed = await orders.version(account.user.id);
+    expect(removed).toEqual({ version: '0:0', newOrders: 0 });
+    expect(removed.version).not.toBe(noted.version);
+  });
+
   it('finds nothing with a filter or search over someone else’s data', async () => {
     const byAgent = await orders.list(
       owner.user.id,
