@@ -43,6 +43,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { ChatWebsite } from '../tools/chat-toolbox';
 import { readWebsitePage, siteRoot } from '../website/website-reader';
 import { isGroupJid } from './group-chat';
+import { LoopGuard } from './loop-guard';
 import {
   imageDataUrl,
   type IncomingMedia,
@@ -165,6 +166,8 @@ export class ChatResponderService {
   // What the summary middleware made of each long chat's older messages.
   private readonly summaries = new Map<string, BaseMessage>();
   private readonly bursts = new Map<string, Burst>();
+  // Catches an agent caught replying to another bot (loop-guard.ts).
+  private readonly loops = new LoopGuard();
   private agent?: ReturnType<typeof createReplyAgent>;
   private confirmationCheck?: ReturnType<typeof createConfirmationCheck>;
 
@@ -282,9 +285,27 @@ export class ChatResponderService {
       images: chats.flatMap((c) => c.images),
     };
 
+    // A one-to-one chat that looks like two bots answering each other stops
+    // here, mid-loop: no reply, and the AI goes off for that contact, the
+    // same switch a person flips in the dashboard, so the owner sees it and
+    // can turn it back on. Groups have their own reply limit.
+    const loopKey = `${phoneNumberId}|${peerJid}`;
+    const loop =
+      !aiOff && !isGroupJid(peerJid)
+        ? this.loops.incoming(loopKey, chat.text)
+        : undefined;
+
     let reply = '';
-    if (!aiOff) {
+    if (loop) {
+      this.logger.warn(
+        `chat agent ${agent.id} stopped an AI loop (${loop}) with ${peerJid}`,
+      );
+      activity(
+        `AI loop stopped (${loop}): ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber} with ${chat.peerPhone ?? peerJid}`,
+      );
+    } else if (!aiOff) {
       reply = await this.replyAs(agent, chat);
+      if (reply) this.loops.replied(loopKey, reply);
     } else {
       // The agent keeps hearing the chat, so when it's switched back on it
       // knows what was said meanwhile. A chat not in memory reloads from the
@@ -312,6 +333,19 @@ export class ChatResponderService {
           `saving chat agent ${agent.id}'s conversation failed: ${err.message}`,
         ),
       );
+    }
+    // After the turn is saved, so the thread exists to switch off.
+    if (loop) {
+      await this.prisma.chatConversation
+        .updateMany({
+          where: { phoneNumberId, peerJid },
+          data: { aiReplyEnabled: false },
+        })
+        .catch((err: Error) =>
+          this.logger.error(
+            `switching off AI for a loop with ${peerJid} failed: ${err.message}`,
+          ),
+        );
     }
   }
 
