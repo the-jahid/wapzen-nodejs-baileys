@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { userSignedUp } from '../activity/activity';
 import { AgentFilesService } from '../agent-files/agent-files.service';
-import { createStarterAgent } from '../chat-agents/starter-agent';
 import { PrismaService } from '../prisma/prisma.service';
 
 // The parts of a Clerk user event this server reads.
@@ -43,22 +42,20 @@ export class WebhooksService {
           return null;
         }
         const username = user.username ?? null;
-        // The auth guard usually creates the row (and its starter agent)
-        // first, and Clerk retries/replays old user.created events, so only a
-        // row this event creates counts as a sign-up. Otherwise a replay
-        // would hand back a starter agent the user had deleted.
+        // The auth guard usually creates the row first, and Clerk retries and
+        // replays old user.created events, so only a row this event creates
+        // counts as a sign-up.
         const existed = await this.prisma.user.findUnique({
           where: { oauthId: user.id },
           select: { id: true },
         });
-        const row = await this.prisma.user.upsert({
+        await this.prisma.user.upsert({
           where: { oauthId: user.id },
           create: { oauthId: user.id, email, username },
           update: { email, username },
         });
         if (event.type === 'user.created' && !existed) {
           userSignedUp(user.id, email);
-          await createStarterAgent(this.prisma, row.id, email, username);
         }
         return null;
       }

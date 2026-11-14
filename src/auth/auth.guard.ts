@@ -10,7 +10,6 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
 import { signInFailed, userSignedIn, userSignedUp } from '../activity/activity';
-import { createStarterAgent } from '../chat-agents/starter-agent';
 import type { User } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { primaryEmail } from '../webhooks/webhooks.service';
@@ -129,7 +128,6 @@ export class ClerkAuthGuard implements CanActivate {
       throw new Error(`${email} already belongs to another account`);
     }
     userSignedUp(clerkId, email);
-    await createStarterAgent(this.prisma, user.id, email, username);
     return user;
   }
 }
