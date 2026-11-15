@@ -7,21 +7,26 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import makeWASocket, {
+  aesEncryptCTR,
   AuthenticationState,
   BinaryNode,
   Browsers,
+  bytesToCrockford,
+  derivePairingCodeKey,
   DisconnectReason,
   downloadMediaMessage,
   fetchLatestWaWebVersion,
   generateMessageIDV2,
   generateWAMessageFromContent,
   getBinaryNodeChild,
+  getCompanionPlatformId,
   isJidBroadcast,
   isJidGroup,
   isJidNewsletter,
   isLidUser,
   isPnUser,
   jidDecode,
+  jidEncode,
   jidNormalizedUser,
   makeCacheableSignalKeyStore,
   normalizeMessageContent,
@@ -874,7 +879,7 @@ export class WhatsAppService
         keys: makeCacheableSignalKeyStore(state.keys, this.baileysLogger),
       },
       logger: this.baileysLogger,
-      browser: Browsers.macOS('Chrome'),
+      browser: BROWSER,
       markOnlineOnConnect: false,
       // Old messages aren't answered, so there's no point downloading them.
       syncFullHistory: false,
@@ -981,7 +986,7 @@ export class WhatsAppService
           try {
             const [, pairingCode] = await Promise.all([
               pairingAccepted(sock),
-              sock.requestPairingCode(opts.pairWith),
+              requestPairingCode(sock, state, opts.pairWith),
             ]);
             const login = this.logins.get(id);
             if (login) login.pairingCode = pairingCode;
@@ -1416,6 +1421,85 @@ function reportLogin(
   const kind = login.byCode ? 'pairing code' : 'QR scan';
   const suffix = detail ? ` - ${detail}` : '';
   activity(`${kind} ${outcome}: ${login.email}${suffix}`);
+}
+
+// How this server names itself to WhatsApp: the linked device's label, and the
+// pairing request's companion_platform_id/display.
+const BROWSER = Browsers.macOS('Chrome');
+
+// Baileys' requestPairingCode (rc14), with one byte fixed. Baileys sends the
+// link_code_pairing_nonce as the text '0' (byte 0x30); WhatsApp Web and
+// whatsmeow send a single 0x00 byte (Baileys PR #2872). With the wrong byte the
+// phone doesn't show its "Enter code to link new device" notification, which
+// should_show_push_notification asks for. Returns once the request is sent;
+// pairingAccepted() carries WhatsApp's answer.
+async function requestPairingCode(
+  sock: WASocket,
+  state: AuthenticationState,
+  phoneNumber: string,
+) {
+  const { creds } = state;
+  const pairingCode = bytesToCrockford(randomBytes(5));
+  creds.pairingCode = pairingCode;
+  creds.me = { id: jidEncode(phoneNumber, 's.whatsapp.net'), name: '~' };
+  sock.ev.emit('creds.update', creds);
+
+  const salt = randomBytes(32);
+  const iv = randomBytes(16);
+  const key = await derivePairingCodeKey(pairingCode, salt);
+  const wrappedEphemeralPub = Buffer.concat([
+    salt,
+    iv,
+    aesEncryptCTR(creds.pairingEphemeralKeyPair.public, key, iv),
+  ]);
+
+  await sock.sendNode({
+    tag: 'iq',
+    attrs: {
+      to: S_WHATSAPP_NET,
+      type: 'set',
+      id: sock.generateMessageTag(),
+      xmlns: 'md',
+    },
+    content: [
+      {
+        tag: 'link_code_companion_reg',
+        attrs: {
+          jid: creds.me.id,
+          stage: 'companion_hello',
+          should_show_push_notification: 'true',
+        },
+        content: [
+          {
+            tag: 'link_code_pairing_wrapped_companion_ephemeral_pub',
+            attrs: {},
+            content: wrappedEphemeralPub,
+          },
+          {
+            tag: 'companion_server_auth_key_pub',
+            attrs: {},
+            content: creds.noiseKey.public,
+          },
+          {
+            tag: 'companion_platform_id',
+            attrs: {},
+            content: getCompanionPlatformId(BROWSER),
+          },
+          {
+            tag: 'companion_platform_display',
+            attrs: {},
+            content: `${BROWSER[1]} (${BROWSER[0]})`,
+          },
+          {
+            tag: 'link_code_pairing_nonce',
+            attrs: {},
+            content: Buffer.from([0]),
+          },
+        ],
+      },
+    ],
+  });
+  return pairingCode;
 }
 
 // WhatsApp's answer to a pairing code request. requestPairingCode returns as
