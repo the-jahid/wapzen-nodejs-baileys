@@ -43,6 +43,7 @@ import { apiError } from '../chat-agents/chat-agents.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { usePrismaAuthState } from './auth-state';
 import { ChatResponderService } from './chat-responder.service';
+import { ackStatusPostsPlainly } from './status-ack';
 import {
   contextInfoOf,
   type GroupSummary,
@@ -898,6 +899,10 @@ export class WhatsAppService
         mappingCache: RecentCache<string>;
       }
     ).mappingCache = new RecentCache(LID_CACHE_SIZE);
+    // Status posts get a plain ack, not Baileys' error-500 nack (see the file).
+    ackStatusPostsPlainly(sock, (err) =>
+      this.logger.debug?.(`${id} status ack failed: ${err.message}`),
+    );
     // Baileys drops a contact's reply token when the account's server flag is
     // off, but WhatsApp Web no longer reads that flag and always sends a valid
     // one. Without it a reply reportedly counts as reaching out to a stranger,
