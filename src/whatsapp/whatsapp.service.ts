@@ -44,6 +44,7 @@ import {
   type OutgoingFile,
   sendsAsPhoto,
 } from '../agent-files/agent-files.types';
+import { ensureAgentForNumber } from '../chat-agents/auto-agent';
 import { apiError } from '../chat-agents/chat-agents.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { usePrismaAuthState } from './auth-state';
@@ -1242,6 +1243,23 @@ export class WhatsAppService
       await this.moveOnto(id, sock, existing.id, existing.waJid);
       if (login) reportLogin(login, 'completed', `linked ${phoneNumber}`);
       return;
+    }
+
+    // A freshly linked number gets its agent before the row says connected,
+    // so the dashboard, which waits for 'connected', finds the agent already
+    // there and opens it with no naming step. Reconnects (after a restart or
+    // a deploy) skip this: the row already has its number, and an agent the
+    // owner deleted stays deleted. A failure here never stops the link.
+    if (!row.phoneNumber) {
+      await ensureAgentForNumber(this.prisma, row.userId, id)
+        .then((r) =>
+          this.logger.log(
+            `${id} agent on link: ${r.kind}${'agentId' in r ? ` ${r.agentId}` : ''}`,
+          ),
+        )
+        .catch((err: Error) =>
+          this.logger.warn(`auto agent for ${id} failed: ${err.message}`),
+        );
     }
 
     await this.prisma.phoneNumber.update({
