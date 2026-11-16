@@ -1,0 +1,79 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import { OpenAPIObject, SwaggerModule } from '@nestjs/swagger';
+import compression from 'compression';
+import { activity } from './activity/activity';
+import { AppModule } from './app.module';
+import { applyMigrations } from './migrate';
+
+// Node ends the process on a rejected promise nobody caught. One stray rejection
+// from a socket would drop every number and the whole API until the host restarts
+// it, and the dashboard would say it could not reach the server.
+process.on('unhandledRejection', (reason) => {
+  const detail =
+    reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+  activity(`unhandled rejection: ${detail}`);
+});
+
+// libsignal (under Baileys) prints whole sessions straight to the console,
+// private keys included, and no logger setting reaches it. Nest and the
+// activity lines write to stdout directly, so they aren't affected.
+const silent = () => undefined;
+console.info = silent;
+console.warn = silent;
+console.debug = silent;
+if (process.env.VERBOSE_LOGS !== 'true') {
+  console.log = silent;
+  console.error = silent;
+}
+
+async function bootstrap() {
+  applyMigrations();
+
+  // rawBody: the Clerk webhook verifies its signature over the exact bytes
+  // Clerk sent (req.rawBody), not the parsed JSON.
+  // Only src/activity lines are printed unless VERBOSE_LOGS=true.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+    logger: process.env.VERBOSE_LOGS === 'true' ? undefined : false,
+  });
+  // Knowledge base texts are sent as JSON and can be long; Express's default
+  // 100 KB limit would refuse them.
+  app.useBodyParser('json', { limit: '10mb' });
+  // Render's edge compresses what browsers get, but its docs don't say whether
+  // bandwidth is counted before or after that, so responses leave here small.
+  app.use(compression());
+  // Sent with every response and read by nobody.
+  app.disable('x-powered-by');
+  app.enableShutdownHooks();
+  // The dashboard (frontend, another origin) calls this API from the browser.
+  // It reads X-Account-Blocked to show its blocked-account screen.
+  // CORS_ALLOWED_ORIGINS is a comma-separated list; unset allows any origin.
+  const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  app.enableCors({
+    origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+    exposedHeaders: ['X-Account-Blocked'],
+    // Without this a browser asks permission again before nearly every request.
+    maxAge: 2 * 60 * 60,
+  });
+
+  const port = process.env.PORT ?? 3000;
+
+  // The API contract is the Go server's (chat side only), copied into
+  // docs/openapi.json by scripts/sync-openapi.mjs — not generated from these
+  // controllers. UI at /docs, raw spec at /docs-json.
+  const document = JSON.parse(
+    readFileSync(join(__dirname, '..', 'docs', 'openapi.json'), 'utf8'),
+  ) as OpenAPIObject;
+  // Relative, so "Try it out" calls whichever host serves /docs.
+  document.servers = [{ url: '/' }];
+  SwaggerModule.setup('docs', app, document);
+
+  await app.listen(port);
+}
+void bootstrap();

@@ -179,6 +179,11 @@ export class ChatResponderService {
     private readonly files: AgentFilesService,
   ) {}
 
+  // For the memory line in the log (WhatsAppService.reportMemory).
+  chatsInMemory() {
+    return this.history.size;
+  }
+
   // Queues a message to be answered with any others the person sends in the
   // same burst. A message lost here (a restart inside the wait) goes unanswered,
   // as one mid-reply always has.

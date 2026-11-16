@@ -40,6 +40,7 @@ import makeWASocket, {
 } from 'baileys';
 import pino from 'pino';
 import { activity } from '../activity/activity';
+import { heapLimitMb } from '../heap';
 import {
   type OutgoingFile,
   sendsAsPhoto,
@@ -116,6 +117,8 @@ const KEYS_REFUSED = new Set<number>([
 // Messages that waited longer than this (delivered on reconnect) get no reply:
 // the person has long stopped waiting, and answering a backlog looks broken.
 const STALE_MESSAGE_SECONDS = 5 * 60;
+// How often the log gets a memory line (reportMemory).
+const MEMORY_REPORT_MS = 15 * 60_000;
 // LID<->phone mappings kept in memory per number (two per contact). Baileys'
 // own cache keeps every one for 7 days with no cap, ~1 KB a contact, and the
 // history sync at link time loads the whole address book into it: megabytes
@@ -199,6 +202,20 @@ export class WhatsAppService
   onApplicationBootstrap() {
     this.resumeSessions().catch((err: Error) =>
       this.logger.error(`resuming phone numbers failed: ${err.message}`),
+    );
+    this.reportMemory();
+    setInterval(() => this.reportMemory(), MEMORY_REPORT_MS).unref();
+  }
+
+  // One activity line on how full the heap is and how many numbers are open,
+  // so a heap that keeps growing shows up in the log hours before it runs out.
+  private reportMemory() {
+    const mb = (bytes: number) => Math.round(bytes / 1048576);
+    const { heapUsed, rss, external } = process.memoryUsage();
+    activity(
+      `memory: heap ${mb(heapUsed)} of ${heapLimitMb()} MB, rss ${mb(rss)} MB, ` +
+        `external ${mb(external)} MB, ${this.sockets.size} numbers open, ` +
+        `${this.logins.size} logins, ${this.responder.chatsInMemory()} chats remembered`,
     );
   }
 
@@ -932,6 +949,12 @@ export class WhatsAppService
           return [];
         }),
     ]);
+    // Another connect for this number got here first while this one waited on
+    // the database (a reconnect timer and the second resume pass, say). A
+    // second socket would push the first out of `sockets` still running: it
+    // would keep its memory and its timers, never be ended, and fight the new
+    // one for the same device.
+    if (this.sockets.has(id)) return;
     this.aiGroups.set(id, new Set(groups.map((group) => group.groupJid)));
     const sock = this.makeSocket(id, state, version);
     this.sockets.set(id, sock);
