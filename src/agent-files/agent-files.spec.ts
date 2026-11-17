@@ -50,7 +50,7 @@ describe('what can be uploaded', () => {
   });
 });
 
-describe('the files database', () => {
+describe('agent_files', () => {
   let server: PGLiteSocketServer;
   let pg: PGlite;
   let files: AgentFilesService;
@@ -62,7 +62,7 @@ describe('the files database', () => {
     pg = await PGlite.create();
     server = new PGLiteSocketServer({ db: pg, port: PORT, host: '127.0.0.1' });
     await server.start();
-    files = new AgentFilesService(config({ FILES_DATABASE_URL: URL }));
+    files = new AgentFilesService(config({ DATABASE_URL: URL }));
   });
 
   afterAll(async () => {
@@ -159,7 +159,7 @@ describe('the files database', () => {
   });
 });
 
-describe('with no files database set', () => {
+describe('with no database set', () => {
   const files = new AgentFilesService(config({}));
 
   it('is off, and a reply simply has no files', async () => {

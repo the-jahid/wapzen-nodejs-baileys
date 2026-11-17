@@ -199,7 +199,7 @@ describe('an agent sending a file', () => {
     );
   });
 
-  it('still answers when the files database is down', async () => {
+  it('still answers when the files cannot be read', async () => {
     const { send, sendFile, answer } = setup({
       listForReply: () => Promise.reject(new Error('connection refused')),
     });

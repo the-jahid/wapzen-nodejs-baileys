@@ -72,7 +72,7 @@ describe('the files routes', () => {
     await server.start();
     files = new AgentFilesService({
       get: (key: string) =>
-        key === 'FILES_DATABASE_URL'
+        key === 'DATABASE_URL'
           ? `postgresql://postgres:postgres@127.0.0.1:${PORT}/postgres`
           : undefined,
     } as unknown as ConfigService);

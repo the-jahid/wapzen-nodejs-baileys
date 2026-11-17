@@ -66,7 +66,7 @@ export class WebhooksService {
           select: { id: true },
         });
         await this.prisma.user.deleteMany({ where: { oauthId: user.id } });
-        // Their files are in the files database, out of the cascade's reach.
+        // agent_files has no foreign keys, so the cascade doesn't reach them.
         if (gone) await this.files.removeForUser(gone.id);
         return null;
       }

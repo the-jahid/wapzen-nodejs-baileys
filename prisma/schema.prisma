@@ -378,3 +378,20 @@ model Order {
   @@index([conversationId, createdAt])
   @@map("orders")
 }
+// Images and documents agents send (src/agent-files, which queries it with
+// plain pg). No relations on purpose: see the migration.
+model AgentFile {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId      String   @map("user_id")
+  chatAgentId String   @map("chat_agent_id")
+  fileName    String   @map("file_name")
+  mimeType    String   @map("mime_type")
+  sizeBytes   Int      @map("size_bytes")
+  description String
+  data        Bytes
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([chatAgentId, createdAt], map: "agent_files_agent_idx")
+  @@index([userId], map: "agent_files_user_idx")
+  @@map("agent_files")
+}

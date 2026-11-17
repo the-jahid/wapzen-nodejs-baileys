@@ -850,8 +850,8 @@ export class ChatResponderService {
     );
   }
 
-  // The files this agent can send in this chat. They live in their own database,
-  // so trouble there is logged and the agent answers without them.
+  // The files this agent can send in this chat. Trouble reading them is logged
+  // and the agent answers without them.
   private async filesFor(
     agent: ReplyingAgent,
     chat: IncomingChat,

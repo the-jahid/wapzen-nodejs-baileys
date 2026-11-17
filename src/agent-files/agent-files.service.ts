@@ -3,13 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import { Client, Pool } from 'pg';
 import type { AgentFile } from './agent-files.types';
 
-// Uploads are few and the database is far away, so a small pool is plenty.
+// Uploads are few, so a small pool of its own is plenty.
 const POOL_SIZE = 3;
 const IDLE_MS = 5 * 60_000;
 const CONNECT_TIMEOUT_MS = 20_000;
-// This database is a long way from the server (Seoul from Frankfurt), and every
-// reply asks what files its agent has. An upload or delete clears the entry, and
-// this only limits how long another instance's change can go unseen.
+// Every reply asks what files its agent has, which changes far less often. An
+// upload or delete clears the entry, and this only limits how long another
+// instance's change can go unseen.
 const LIST_CACHE_MS = 60_000;
 
 const CREATE_TABLE = `
@@ -45,11 +45,11 @@ function connection(connectionString: string) {
   };
 }
 
-// Images and documents agents can send. They live in their own database
-// (FILES_DATABASE_URL), beside the main one (DATABASE_URL) and holding nothing
-// else. Nothing here can join the main database: who owns an agent is checked
-// there, and removing an agent or user has to remove its files here by hand.
-// Without the setting the feature is off and everything else works as before.
+// Images and documents agents can send, in the agent_files table of the main
+// database (DATABASE_URL; the table is in prisma/schema.prisma). They used to
+// live in a separate database, so the table has no foreign keys: who owns an
+// agent is checked in the controller, and removing an agent or user removes its
+// files by hand. Without DATABASE_URL the feature is off.
 @Injectable()
 export class AgentFilesService implements OnModuleDestroy {
   private readonly logger = new Logger(AgentFilesService.name);
@@ -62,9 +62,9 @@ export class AgentFilesService implements OnModuleDestroy {
   >();
 
   constructor(config: ConfigService) {
-    const url = config.get<string>('FILES_DATABASE_URL');
+    const url = config.get<string>('DATABASE_URL');
     if (!url) return;
-    this.setupUrl = config.get<string>('FILES_DIRECT_URL') || url;
+    this.setupUrl = config.get<string>('DIRECT_URL') || url;
     this.pool = new Pool({
       ...connection(url),
       max: POOL_SIZE,
@@ -73,7 +73,7 @@ export class AgentFilesService implements OnModuleDestroy {
     });
     // Without a listener a dropped idle connection would take the server down.
     this.pool.on('error', (err) =>
-      this.logger.warn(`files database connection lost: ${err.message}`),
+      this.logger.warn(`agent files connection lost: ${err.message}`),
     );
   }
 
@@ -85,11 +85,11 @@ export class AgentFilesService implements OnModuleDestroy {
     await this.pool?.end();
   }
 
-  // The table is made on first use, over the session connection, and tried again
-  // next time if that fails, so a database that's down at boot can't stop the
-  // server or leave the feature broken until a restart.
+  // The migration makes the table; this also makes it on first use (over the
+  // session connection, tried again next time if that fails) so a database
+  // without the migration still works, as the tests' do.
   private async db() {
-    if (!this.pool) throw new Error('FILES_DATABASE_URL is not set');
+    if (!this.pool) throw new Error('DATABASE_URL is not set');
     this.tableReady ??= this.createTable().catch((err: Error) => {
       this.tableReady = undefined;
       throw err;

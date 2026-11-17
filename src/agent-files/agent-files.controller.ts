@@ -166,8 +166,8 @@ export class AgentFilesController {
     };
   }
 
-  // Files have no link to agents in their own database, so this is the check
-  // that one user can't reach another's.
+  // agent_files has no foreign key to chat_agents, so this is the check that
+  // one user can't reach another's.
   private async ownedAgent(user: User, rawId: string) {
     const id = rawId.trim();
     const found = await this.prisma.chatAgent.count({
@@ -177,8 +177,8 @@ export class AgentFilesController {
     return id;
   }
 
-  // Runs a call to the files database, whose trouble is a 503, not a 500: the
-  // rest of the agent still works.
+  // Runs a call to agent_files, whose trouble is a 503, not a 500: the rest of
+  // the agent still works.
   private async available<T>(call: () => Promise<T>): Promise<T> {
     if (!this.files.enabled) {
       throw apiError(
@@ -190,7 +190,7 @@ export class AgentFilesController {
       return await call();
     } catch (err) {
       if (err instanceof HttpException) throw err;
-      this.logger.error(`files database: ${(err as Error).message}`);
+      this.logger.error(`agent files: ${(err as Error).message}`);
       throw apiError(
         HttpStatus.SERVICE_UNAVAILABLE,
         "File storage can't be reached right now. Try again in a moment.",
