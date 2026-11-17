@@ -54,7 +54,7 @@ function connection(connectionString: string) {
 export class AgentFilesService implements OnModuleDestroy {
   private readonly logger = new Logger(AgentFilesService.name);
   private readonly pool?: Pool;
-  private readonly setupUrl?: string;
+  private readonly url?: string;
   private tableReady?: Promise<void>;
   private readonly listed = new Map<
     string,
@@ -64,7 +64,7 @@ export class AgentFilesService implements OnModuleDestroy {
   constructor(config: ConfigService) {
     const url = config.get<string>('DATABASE_URL');
     if (!url) return;
-    this.setupUrl = config.get<string>('DIRECT_URL') || url;
+    this.url = url;
     this.pool = new Pool({
       ...connection(url),
       max: POOL_SIZE,
@@ -86,7 +86,7 @@ export class AgentFilesService implements OnModuleDestroy {
   }
 
   // The migration makes the table; this also makes it on first use (over the
-  // session connection, tried again next time if that fails) so a database
+  // separate connection, tried again next time if that fails) so a database
   // without the migration still works, as the tests' do.
   private async db() {
     if (!this.pool) throw new Error('DATABASE_URL is not set');
@@ -99,7 +99,7 @@ export class AgentFilesService implements OnModuleDestroy {
   }
 
   private async createTable() {
-    const client = new Client(connection(this.setupUrl!));
+    const client = new Client(connection(this.url!));
     await client.connect();
     try {
       await client.query(CREATE_TABLE);
