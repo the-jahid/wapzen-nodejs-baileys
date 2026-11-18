@@ -51,10 +51,22 @@ async function bootstrap() {
   // The dashboard (frontend, another origin) calls this API from the browser.
   // It reads X-Account-Blocked to show its blocked-account screen.
   // CORS_ALLOWED_ORIGINS is a comma-separated list; unset allows any origin.
-  const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? '')
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
+  // Each listed origin also allows its www/apex twin: on 2026-11-18 the site
+  // started redirecting wapzen.io -> www.wapzen.io and the whole dashboard
+  // failed CORS because only the apex was listed.
+  const allowedOrigins = [
+    ...new Set(
+      (process.env.CORS_ALLOWED_ORIGINS ?? '')
+        .split(',')
+        .map((o) => o.trim().replace(/\/+$/, ''))
+        .filter(Boolean)
+        .flatMap((o) => {
+          const m = /^(https?:\/\/)(www\.)?(.+)$/.exec(o);
+          if (!m || /^(localhost|\d+\.\d+\.\d+\.\d+)(:|$)/.test(m[3])) return [o];
+          return [`${m[1]}${m[3]}`, `${m[1]}www.${m[3]}`];
+        }),
+    ),
+  ];
   app.enableCors({
     origin: allowedOrigins.length > 0 ? allowedOrigins : true,
     exposedHeaders: ['X-Account-Blocked'],
