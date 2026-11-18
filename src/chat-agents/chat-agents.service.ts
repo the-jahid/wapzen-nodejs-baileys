@@ -25,6 +25,15 @@ import {
 
 type Tx = Prisma.TransactionClient;
 
+// Prisma's defaults (2s to get a connection, 5s for the whole transaction)
+// were hit on 2026-11-18: an agent save is a dozen sequential trips to the
+// database, and overlapping saves of one agent queued on its row lock with
+// their 5s already running, so Prisma threw the work away.
+const TX_OPTIONS = { maxWait: 10_000, timeout: 20_000 };
+// A save that lost a deadlock (P2034) is safe to run again: the database
+// rolled it back whole.
+const TX_ATTEMPTS = 3;
+
 // The chat-agent rules of the Go server's internal/chatagents/repository.go:
 // a per-account agent limit, a number owned by the caller and held by at most
 // one agent, giving an agent a number takes it live, and an active agent
@@ -32,6 +41,12 @@ type Tx = Prisma.TransactionClient;
 @Injectable()
 export class ChatAgentsService {
   private readonly logger = new Logger(ChatAgentsService.name);
+  // The save running (or queued last) per agent. The dashboard autosaves while
+  // the owner types, so saves of one agent overlap; run them one after another
+  // here instead of letting each hold a pool connection while it waits on the
+  // agent's row lock. That waiting is what expired transactions, deadlocked
+  // the join-table rewrites and starved the pool for everyone else.
+  private readonly saving = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -141,11 +156,34 @@ export class ChatAgentsService {
     id: string,
     req: ChatAgentInput,
   ): Promise<ChatAgentResource> {
+    const previous = this.saving.get(id) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => this.save(userId, id, req));
+    this.saving.set(id, next);
+    void next
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.saving.get(id) === next) this.saving.delete(id);
+      });
+    return next;
+  }
+
+  private save(
+    userId: string,
+    id: string,
+    req: ChatAgentInput,
+  ): Promise<ChatAgentResource> {
     return this.run('failed to update chat agent', async (tx) => {
       const locked = await tx.$queryRaw<{ id: string }[]>`
         SELECT id FROM chat_agents WHERE id = ${id} AND user_id = ${userId} FOR UPDATE`;
       if (locked.length === 0) throw notFound();
-      const current = await tx.chatAgent.findUniqueOrThrow({ where: { id } });
+      // With its attachments and the owner's plan, so unchanged lists and the
+      // trial check need no further trips.
+      const current = await tx.chatAgent.findUniqueOrThrow({
+        where: { id },
+        include: resourceInclude,
+      });
 
       const data: Prisma.ChatAgentUncheckedUpdateInput = {};
       const { agent: a, model: m } = req;
@@ -173,15 +211,20 @@ export class ChatAgentsService {
       // Quietly, not refused: the dashboard sends status active with every
       // save once a number is picked, and the rest of the save must still go
       // through. The resource says why (free_trial_ended).
-      if (nextStatus === 'active' && (await trialOver(tx, userId))) {
+      if (nextStatus === 'active' && freeTrialEnded(current.user)) {
         nextStatus = 'inactive';
       }
 
-      if (a?.name !== undefined) {
+      // The dashboard sends every field with every save; only what changed
+      // needs checking or writing.
+      if (a?.name !== undefined && a.name.trim() !== current.agentName) {
         data.agentName = a.name.trim();
         await ensureNameFree(tx, userId, data.agentName, id);
       }
-      if (a?.phone_number_id !== undefined) {
+      if (
+        a?.phone_number_id !== undefined &&
+        nextPhoneNumberId !== current.phoneNumberId
+      ) {
         await ensurePhoneNumberFree(tx, userId, nextPhoneNumberId, id);
         data.phoneNumberId = nextPhoneNumberId;
       }
@@ -218,27 +261,31 @@ export class ChatAgentsService {
       // An id list replaces the attached set wholesale; leaving it out keeps
       // the set as it is.
       const kbIds = req.knowledge_base?.knowledge_base_ids;
-      if (kbIds !== undefined) {
+      if (
+        kbIds !== undefined &&
+        !sameIds(
+          normalizeIds(kbIds),
+          current.knowledgeBases.map((row) => row.knowledgeBaseId),
+        )
+      ) {
         const owned = await ownedKnowledgeBaseIds(tx, userId, kbIds);
         data.knowledgeBases = {
           deleteMany: {},
           create: knowledgeBaseRows(owned),
         };
       }
-      if (req.tools?.tool_ids !== undefined) {
+      const attached = current.tools.map((row) => row.toolId);
+      if (
+        req.tools?.tool_ids !== undefined &&
+        !sameIds(normalizeIds(req.tools.tool_ids), attached)
+      ) {
         const toolIds = await ownedToolIds(tx, userId, req.tools.tool_ids);
         data.tools = { deleteMany: {}, create: attachmentRows(toolIds) };
         // Attaching Take Order is taking orders. It used to need the toggle as
         // well, and 8 of 13 owners who attached it missed that: their agents
         // told customers ordering wasn't available. Wins over an order_enabled
         // in the same request, which the dashboard sends with every save.
-        const attached = await tx.chatAgentTool.findMany({
-          where: { chatAgentId: id },
-          select: { toolId: true },
-        });
-        const added = toolIds.filter(
-          (toolId) => !attached.some((row) => row.toolId === toolId),
-        );
+        const added = toolIds.filter((toolId) => !attached.includes(toolId));
         if (await includesTakeOrder(tx, added)) data.orderEnabled = true;
       }
 
@@ -269,7 +316,17 @@ export class ChatAgentsService {
     fn: (tx: Tx) => Promise<T>,
   ): Promise<T> {
     try {
-      return await this.prisma.$transaction(fn);
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await this.prisma.$transaction(fn, TX_OPTIONS);
+        } catch (err) {
+          const deadlocked =
+            err instanceof Prisma.PrismaClientKnownRequestError &&
+            err.code === 'P2034';
+          if (!deadlocked || attempt >= TX_ATTEMPTS) throw err;
+          await new Promise((r) => setTimeout(r, 100 * attempt));
+        }
+      }
     } catch (err) {
       if (err instanceof HttpException) throw err;
       if (
@@ -292,6 +349,11 @@ async function trialOver(tx: Tx, userId: string) {
     select: { noReplyLimitUntil: true, trialEndedAt: true },
   });
   return !!user && freeTrialEnded(user);
+}
+
+// Same ids in the same order: the order is the attachment order shown.
+function sameIds(a: string[], b: string[]) {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
 }
 
 // The checks below run inside the transaction so the API can name the
