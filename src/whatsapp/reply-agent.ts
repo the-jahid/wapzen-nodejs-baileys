@@ -81,7 +81,14 @@ const confirmationPrompt = (details: string[]) =>
 
 // What one reply brings to the agent, which itself is shared by every chat.
 export type ReplyContext = {
+  // The agent's standing instructions, the same on every reply: cached.
   prompt: string;
+  // What changes with every message (the date and time, knowledge passages).
+  // It goes in a system message right after the customer's new message, so
+  // the prompt and the chat before it stay cached.
+  turnNotes?: string;
+  // The id of the customer's message this reply answers.
+  incomingId?: string;
   // Null when the chat agent has no tools.
   toolbox: ChatToolbox | null;
   // A function the first model call must make, when the reply already knows
@@ -91,16 +98,78 @@ export type ReplyContext = {
 
 type AgentToolChoice = 'auto' | 'none' | 'required';
 
+// Prompt caching. Claude caches a request's start up to each block marked
+// with this, and a later request that starts the same way reads it back at a
+// tenth of the input price, and faster. Tools render first, then the system
+// prompt, then the messages, so the marks go on the agent's prompt (tools and
+// prompt) and on the last message before the new one (the chat so far). The
+// next reply in the same chat finds the previous mark and reads all of it.
+// Anything under 512 tokens isn't cached, at no cost.
+const CACHE_MARK = { type: 'ephemeral' } as const;
+
+const cachedSystem = (text: string) =>
+  new SystemMessage({
+    content: [{ type: 'text', text, cache_control: CACHE_MARK }],
+  });
+
+// The same message with a cache mark on its last text block.
+function withCacheMark(message: BaseMessage): BaseMessage {
+  const blocks =
+    typeof message.content === 'string'
+      ? [{ type: 'text', text: message.content }]
+      : [...message.content];
+  const last = blocks.length - 1;
+  if (last < 0 || blocks[last].type !== 'text') return message;
+  blocks[last] = { ...blocks[last], cache_control: CACHE_MARK };
+  const fields = {
+    content: blocks as BaseMessage['content'],
+    id: message.id,
+    name: message.name,
+    additional_kwargs: message.additional_kwargs,
+    response_metadata: message.response_metadata,
+  };
+  if (HumanMessage.isInstance(message)) return new HumanMessage(fields);
+  if (AIMessage.isInstance(message) && !message.tool_calls?.length) {
+    return new AIMessage(fields);
+  }
+  return message;
+}
+
+// The messages one model call sends: the chat before the new message marked
+// for caching, and this turn's notes right after the new message. A system
+// message there is allowed: it follows a customer message, and only the
+// model's own turns come after it.
+function withTurn(messages: BaseMessage[], context: ReplyContext) {
+  const at = context.incomingId
+    ? messages.findIndex((m) => m.id === context.incomingId)
+    : -1;
+  if (at < 0) return messages;
+  const out = [...messages];
+  if (at > 0) out[at - 1] = withCacheMark(out[at - 1]);
+  const notesId = `${context.incomingId}:notes`;
+  if (context.turnNotes && !out.some((m) => m.id === notesId)) {
+    out.splice(
+      at + 1,
+      0,
+      new SystemMessage({ id: notesId, content: context.turnNotes }),
+    );
+  }
+  return out;
+}
+
 // Tools differ per chat agent, so none are registered up front: each model
 // call gets the ones this reply's agent has. With no toolbox the request goes
 // out with no tools and no tool_choice, so the model is never offered any.
 const chatAgentTools = createMiddleware({
   name: 'ChatAgentTools',
   wrapModelCall: (request, handler) => {
-    const { prompt, toolbox, requiredTool } = request.runtime
-      .context as ReplyContext;
-    const systemMessage = new SystemMessage(prompt);
-    if (!toolbox) return handler({ ...request, systemMessage, tools: [] });
+    const context = request.runtime.context as ReplyContext;
+    const { prompt, toolbox, requiredTool } = context;
+    const systemMessage = cachedSystem(prompt);
+    const messages = withTurn(request.messages, context);
+    if (!toolbox) {
+      return handler({ ...request, systemMessage, messages, tools: [] });
+    }
 
     const finished = request.messages.filter(
       (m) => AIMessage.isInstance(m) && m.tool_calls?.length,
@@ -113,6 +182,7 @@ const chatAgentTools = createMiddleware({
     return handler({
       ...request,
       systemMessage,
+      messages,
       tools: toolbox.definitions(),
       toolChoice: (finished + 1 >= MAX_TOOL_ROUNDS
         ? 'none'
@@ -229,8 +299,9 @@ export function createConfirmationCheck(apiKey: string) {
       .concat(`Customer: ${text}`)
       .join('\n');
     const business = instructions.trim();
+    // The instructions are the same for every chat of the agent: cached.
     const messages = [
-      new SystemMessage(
+      cachedSystem(
         business
           ? `${prompt}\n\nThe business's order instructions:\n${business}`
           : prompt,

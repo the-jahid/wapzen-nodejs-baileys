@@ -535,14 +535,20 @@ export class ChatResponderService {
       // What the owner set up: the agent's prompt, their order instructions
       // with order taking on, and passages from attached knowledge bases. The
       // one line added for every agent is the date and time, in the zone of
-      // the agent's number. The date and the passages change, so they go last
-      // and the rest caches. A group gets a note on how to read it.
+      // the agent's number. A group gets a note on how to read it. The date
+      // and the passages change with every message, so they don't go in the
+      // prompt, which Claude caches: they go after the new message
+      // (turnNotes), leaving the prompt and the chat before it cached.
       const prompt = [
         agent.systemPrompt.trim(),
         toolbox?.takesOrders ? agent.orderInstructions.trim() : '',
         toolbox?.filesPrompt ?? '',
         toolbox?.websitePrompt ?? '',
         isGroupJid(chat.peerJid) ? GROUP_CHAT_NOTE : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+      const turnNotes = [
         dateContext(new Date(), zoneForPhone(agent.phoneNumber?.phoneNumber)),
         knowledge,
       ]
@@ -578,6 +584,8 @@ export class ChatResponderService {
       }
       const generated = await this.generate(key, apiKey, messages, incoming, {
         prompt,
+        turnNotes,
+        incomingId: incoming.id,
         toolbox,
         requiredTool: check && check.confirmed ? ORDER_FUNCTION : undefined,
       });
