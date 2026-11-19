@@ -4,7 +4,7 @@ import {
   ToolMessage,
   type BaseMessage,
 } from '@langchain/core/messages';
-import { ChatOpenAI } from '@langchain/openai';
+import { ChatAnthropic } from '@langchain/anthropic';
 import {
   AIMessage,
   createAgent,
@@ -14,22 +14,22 @@ import {
 import { DEFAULT_MODEL } from '../chat-agents/chat-agents.types';
 import type { ChatToolbox } from '../tools/chat-toolbox';
 
-// Reasoning counts against this. At medium effort it took up to 2,304 tokens on
-// a short prompt, and a reply that runs out has no text, so this is a safety
-// limit, not a length limit: chatReplyStyle keeps replies short.
+// Claude Haiku 5.5 thinks by default, and thinking counts against this; a reply
+// that runs out has no text, so this is a safety limit, not a length limit:
+// chatReplyStyle keeps replies short.
 const REPLY_MAX_TOKENS = 6000;
-// gpt-6-luna takes function tools on chat completions only with reasoning off
-// ("none"; it also refuses "minimal"), and every call here can carry tools, so
-// no call reasons. Measured 2026-11-02: a short reply took 1.2–2.4s.
-const REPLY_EFFORT = 'none';
+// Low effort: the cheapest, fastest level, meant for chat. The model thinks
+// little and skips thinking on simple messages. Thinking stays on (adaptive)
+// rather than disabled: lowering effort is Anthropic's lever for less of it.
+const REPLY_EFFORT = 'low';
 // One model call that takes longer than this is abandoned (and retried once),
 // so a stuck request can't leave the chat on "typing" for minutes.
 const CALL_TIMEOUT_MS = 20_000;
 // How many times one reply may call tools. The last round is asked for text
 // only, so a model that keeps calling tools still ends up answering.
 const MAX_TOOL_ROUNDS = 3;
-// The answer to the yes-or-no question below is one short function call, but
-// reasoning took up to 1,216 tokens first, and running out reads as a no.
+// The answer to the yes-or-no question below is one short forced function
+// call, which Claude makes without thinking first; running out reads as a no.
 const CONFIRMATION_MAX_TOKENS = 3000;
 // How much of the chat that question is asked about. Details come one message
 // at a time, so the name can be many turns back by the yes: at 6 a live order
@@ -46,7 +46,8 @@ export const CHAT_REMEMBER_MESSAGES = 40;
 // keeping the last CHAT_REMEMBER_MESSAGES and the new message word for word.
 export const CHAT_SUMMARY_AT = 50;
 const CHAT_KEEP_MESSAGES = CHAT_REMEMBER_MESSAGES + 1;
-const SUMMARY_MAX_TOKENS = 600;
+// The notes are at most 120 words, but thinking counts against this too.
+const SUMMARY_MAX_TOKENS = 2000;
 // Room for a dozen messages of the longest replies REPLY_MAX_TOKENS allows.
 const SUMMARY_INPUT_TOKENS = 80_000;
 // The summary goes back to the model as a customer message, never into the
@@ -88,6 +89,8 @@ export type ReplyContext = {
   requiredTool?: string;
 };
 
+type AgentToolChoice = 'auto' | 'none' | 'required';
+
 // Tools differ per chat agent, so none are registered up front: each model
 // call gets the ones this reply's agent has. With no toolbox the request goes
 // out with no tools and no tool_choice, so the model is never offered any.
@@ -102,15 +105,18 @@ const chatAgentTools = createMiddleware({
     const finished = request.messages.filter(
       (m) => AIMessage.isInstance(m) && m.tool_calls?.length,
     ).length;
-    const choice =
-      requiredTool && finished === 0
-        ? { type: 'function' as const, function: { name: requiredTool } }
-        : 'auto';
+    // The agent hands toolChoice to ChatAnthropic as is, and a bare tool name
+    // is its spelling of "call this tool" ({type: "tool", name}). The
+    // middleware's type only lists OpenAI's object form, which Anthropic
+    // refuses, hence the cast.
+    const choice = requiredTool && finished === 0 ? requiredTool : 'auto';
     return handler({
       ...request,
       systemMessage,
       tools: toolbox.definitions(),
-      toolChoice: finished + 1 >= MAX_TOOL_ROUNDS ? 'none' : choice,
+      toolChoice: (finished + 1 >= MAX_TOOL_ROUNDS
+        ? 'none'
+        : choice) as AgentToolChoice,
     });
   },
   wrapToolCall: async (request) => {
@@ -124,29 +130,29 @@ const chatAgentTools = createMiddleware({
   },
 });
 
-// Every chat agent answers with the same model, whatever the row says. It
-// refuses any temperature but its default, so agent.temperature isn't sent.
-// Reasoning spends the same tokens as the answer, so the limits above have to
-// leave room for it or the model answers with no text.
+// Every chat agent answers with the same model, Claude Haiku 5.5, whatever the
+// row says. It refuses temperature, top_p and top_k, so agent.temperature
+// isn't sent. Thinking spends the same tokens as the answer, so the limits
+// above have to leave room for it or the model answers with no text.
 function chatModel(
   apiKey: string,
   maxTokens: number,
-  effort: 'none' | 'low' | 'medium' = REPLY_EFFORT,
+  effort: 'low' | 'medium' | 'high' = REPLY_EFFORT,
 ) {
-  return new ChatOpenAI({
+  return new ChatAnthropic({
     model: DEFAULT_MODEL,
     apiKey,
     maxTokens,
     maxRetries: 1,
-    timeout: CALL_TIMEOUT_MS,
-    reasoning: { effort },
+    clientOptions: { timeout: CALL_TIMEOUT_MS },
+    outputConfig: { effort },
   });
 }
 
 // Once a chat reaches CHAT_SUMMARY_AT messages, everything but the last
 // CHAT_KEEP_MESSAGES is replaced by one summary message, which the responder
-// keeps and sends back in place of them. Copying facts forward needs no
-// reasoning, so the summary runs with none too.
+// keeps and sends back in place of them. Copying facts forward needs little
+// thought, so the summary runs at low effort too.
 export function createReplyAgent(apiKey: string) {
   return createAgent({
     model: chatModel(apiKey, REPLY_MAX_TOKENS),
@@ -206,12 +212,9 @@ export function createConfirmationCheck(apiKey: string) {
         },
       },
     ],
-    {
-      tool_choice: {
-        type: 'function',
-        function: { name: CONFIRMATION_FUNCTION },
-      },
-    },
+    // Claude Haiku 5.5 accepts a forced tool; the reply then starts with the
+    // call and skips thinking, which keeps this check fast.
+    { tool_choice: CONFIRMATION_FUNCTION },
   );
 
   return async (

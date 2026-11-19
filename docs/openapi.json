@@ -172,22 +172,22 @@
             "type": "object"
           },
           "model": {
-            "description": "Conversational model settings. Every chat agent answers with GPT-6 Luna; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-6 Luna takes none.",
+            "description": "Conversational model settings. Every chat agent answers with Claude Haiku 5.5; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: Claude Haiku 5.5 takes none.",
             "properties": {
               "name": {
-                "default": "gpt-6-luna",
+                "default": "claude-haiku-5-5",
                 "enum": [
-                  "gpt-6-luna"
+                  "claude-haiku-5-5"
                 ],
-                "example": "gpt-6-luna",
+                "example": "claude-haiku-5-5",
                 "type": "string"
               },
               "provider": {
-                "default": "openai",
+                "default": "anthropic",
                 "enum": [
-                  "openai"
+                  "anthropic"
                 ],
-                "example": "openai",
+                "example": "anthropic",
                 "type": "string"
               },
               "temperature": {
@@ -626,22 +626,22 @@
             "type": "object"
           },
           "model": {
-            "description": "Conversational model settings. Every chat agent answers with GPT-6 Luna; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-6 Luna takes none.",
+            "description": "Conversational model settings. Every chat agent answers with Claude Haiku 5.5; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: Claude Haiku 5.5 takes none.",
             "properties": {
               "name": {
-                "default": "gpt-6-luna",
+                "default": "claude-haiku-5-5",
                 "enum": [
-                  "gpt-6-luna"
+                  "claude-haiku-5-5"
                 ],
-                "example": "gpt-6-luna",
+                "example": "claude-haiku-5-5",
                 "type": "string"
               },
               "provider": {
-                "default": "openai",
+                "default": "anthropic",
                 "enum": [
-                  "openai"
+                  "anthropic"
                 ],
-                "example": "openai",
+                "example": "anthropic",
                 "type": "string"
               },
               "temperature": {
@@ -2402,22 +2402,22 @@
             "type": "object"
           },
           "model": {
-            "description": "Conversational model settings. Every chat agent answers with GPT-6 Luna; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-6 Luna takes none.",
+            "description": "Conversational model settings. Every chat agent answers with Claude Haiku 5.5; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: Claude Haiku 5.5 takes none.",
             "properties": {
               "name": {
-                "default": "gpt-6-luna",
+                "default": "claude-haiku-5-5",
                 "enum": [
-                  "gpt-6-luna"
+                  "claude-haiku-5-5"
                 ],
-                "example": "gpt-6-luna",
+                "example": "claude-haiku-5-5",
                 "type": "string"
               },
               "provider": {
-                "default": "openai",
+                "default": "anthropic",
                 "enum": [
-                  "openai"
+                  "anthropic"
                 ],
-                "example": "openai",
+                "example": "anthropic",
                 "type": "string"
               },
               "temperature": {
@@ -2888,8 +2888,8 @@
                         ]
                       },
                       "model": {
-                        "name": "gpt-6-luna",
-                        "provider": "openai",
+                        "name": "claude-haiku-5-5",
+                        "provider": "anthropic",
                         "temperature": 0.3
                       },
                       "prompt": {
@@ -2986,8 +2986,8 @@
                       ]
                     },
                     "model": {
-                      "name": "gpt-6-luna",
-                      "provider": "openai",
+                      "name": "claude-haiku-5-5",
+                      "provider": "anthropic",
                       "temperature": 0.3
                     },
                     "prompt": {
@@ -3162,8 +3162,8 @@
                       ]
                     },
                     "model": {
-                      "name": "gpt-6-luna",
-                      "provider": "openai",
+                      "name": "claude-haiku-5-5",
+                      "provider": "anthropic",
                       "temperature": 0.3
                     },
                     "prompt": {
@@ -3266,8 +3266,8 @@
                       ]
                     },
                     "model": {
-                      "name": "gpt-6-luna",
-                      "provider": "openai",
+                      "name": "claude-haiku-5-5",
+                      "provider": "anthropic",
                       "temperature": 0.3
                     },
                     "prompt": {

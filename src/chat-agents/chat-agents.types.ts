@@ -9,8 +9,8 @@ import { cleanText } from '../orders/orders.types';
 // model a chat agent may use. Temperature is still stored and returned for
 // the contract, but this model takes none, so it no longer changes a reply.
 export const DEFAULT_STATUS = 'inactive';
-export const DEFAULT_PROVIDER = 'openai';
-export const DEFAULT_MODEL = 'gpt-6-luna';
+export const DEFAULT_PROVIDER = 'anthropic';
+export const DEFAULT_MODEL = 'claude-haiku-5-5';
 export const DEFAULT_TEMPERATURE = 0.3;
 export const DEFAULT_SYSTEM_PROMPT =
   'You are a helpful, friendly WhatsApp chat assistant.';

@@ -148,9 +148,8 @@ const json = JSON.stringify(doc, null, 2)
   )
   .replaceAll(
     'Every chat agent answers with Claude Haiku 4.5; provider and name may be omitted and cannot name another model.',
-    'Every chat agent answers with GPT-6 Luna; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: GPT-6 Luna takes none.',
+    'Every chat agent answers with Claude Haiku 5.5; provider and name may be omitted and cannot name another model. temperature is stored but no longer changes a reply: Claude Haiku 5.5 takes none.',
   )
-  .replaceAll('"claude-haiku-4-5"', '"gpt-6-luna"')
-  .replaceAll('"anthropic"', '"openai"');
+  .replaceAll('"claude-haiku-4-5"', '"claude-haiku-5-5"');
 writeFileSync(out, json + '\n');
 console.log(`wrote ${out}: ${Object.keys(doc.paths).length} paths, ${Object.keys(schemas).length} schemas`);

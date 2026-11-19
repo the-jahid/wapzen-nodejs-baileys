@@ -484,10 +484,11 @@ export class ChatResponderService {
 
   // Answers as the agent and returns what was sent, or '' when nothing was.
   private async replyAs(agent: ReplyingAgent, chat: ReadChat) {
-    const apiKey = this.config.get<string>('OPENAI_API_KEY');
+    // Replies come from Claude; OpenAI is only used to transcribe voice notes.
+    const apiKey = this.config.get<string>('ANTHROPIC_API_KEY');
     if (!apiKey) {
       this.logger.warn(
-        `OPENAI_API_KEY is not set; chat agent ${agent.id} can't reply`,
+        `ANTHROPIC_API_KEY is not set; chat agent ${agent.id} can't reply`,
       );
       return '';
     }
