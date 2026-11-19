@@ -135,6 +135,9 @@ export type IncomingChat = {
   sendTo?: (phone: string, text: string) => Promise<unknown>;
   sendFile: (file: OutgoingFile) => Promise<unknown>;
   setTyping: (typing: boolean) => Promise<unknown>;
+  // When it reached this server (set by respond), for the loop guard's speed
+  // rule: how fast it came after the agent's reply.
+  receivedAt?: number;
 };
 
 // A message a person sent from the number's own WhatsApp.
@@ -196,7 +199,7 @@ export class ChatResponderService {
       this.bursts.set(key, burst);
     }
     if (!burst.waiting.length) burst.firstAt = now;
-    burst.waiting.push(chat);
+    burst.waiting.push({ ...chat, receivedAt: chat.receivedAt ?? now });
     burst.lastAt = now;
     if (!burst.replying) this.schedule(key, burst);
     return Promise.resolve();
@@ -293,11 +296,15 @@ export class ChatResponderService {
     // A one-to-one chat that looks like two bots answering each other stops
     // here, mid-loop: no reply, and the AI goes off for that contact, the
     // same switch a person flips in the dashboard, so the owner sees it and
-    // can turn it back on. Groups have their own reply limit.
+    // can turn it back on. Groups have their own reply limit. The speed rule
+    // times the burst by its last message, and only when all of it was typed.
     const loopKey = `${phoneNumberId}|${peerJid}`;
     const loop =
       !aiOff && !isGroupJid(peerJid)
-        ? this.loops.incoming(loopKey, chat.text)
+        ? this.loops.incoming(loopKey, chat.text, Date.now(), {
+            sentAt: Math.max(...chats.map((c) => c.receivedAt ?? Date.now())),
+            typed: chats.every((c) => !c.media),
+          })
         : undefined;
 
     let reply = '';

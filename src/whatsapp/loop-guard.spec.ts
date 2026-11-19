@@ -74,6 +74,86 @@ describe('LoopGuard', () => {
     expect(guard.incoming('other|chat', '😊', 100_000)).toBeUndefined();
   });
 
+  describe('speed: messages typed faster than a person can', () => {
+    // Replies like the ones two Claude agents traded in a live test: long,
+    // never repeated, each 2-4 s after the other's.
+    const botTexts = Array.from(
+      { length: 20 },
+      (_, i) =>
+        `Thanks for clarifying! I'm the assistant for Glow Salon, so I can help with haircuts and facials (${i}). What would you like to book?`,
+    );
+
+    it('stops two AI agents writing long, different messages within seconds', () => {
+      const guard = new LoopGuard();
+      const r = play(guard, botTexts, 3_500);
+      expect(r).toEqual({ tripped: 'speed', at: 4 });
+    });
+
+    it('stops a slower bot too, as long as it outpaces a person', () => {
+      const guard = new LoopGuard();
+      // ~130 characters every 8 s: 16 a second.
+      expect(play(guard, botTexts, 8_000)?.tripped).toBe('speed');
+    });
+
+    it('leaves a person typing long messages at phone speed alone', () => {
+      const guard = new LoopGuard();
+      // ~130 characters 30 s after each reply: 4 a second.
+      expect(play(guard, botTexts.slice(0, 12), 30_000)).toBeUndefined();
+    });
+
+    it('leaves quick short answers alone', () => {
+      const guard = new LoopGuard();
+      const texts = [
+        'yes',
+        'ok thanks',
+        'the red one',
+        'tomorrow 5pm',
+        'cash',
+        'road 5 banani',
+        'great',
+        'bye',
+      ];
+      expect(play(guard, texts, 1_000)).toBeUndefined();
+    });
+
+    it('never counts voice messages or photos', () => {
+      const guard = new LoopGuard();
+      let now = 0;
+      for (let i = 0; i < 8; i++) {
+        now += 3_500;
+        const text = `🎤 ${botTexts[i]}`;
+        expect(guard.incoming(K, text, now, { typed: false })).toBeUndefined();
+        now += 2_000;
+        guard.replied(K, `reply ${i}`, now);
+      }
+    });
+
+    it("doesn't count a message sent before the agent's reply went out", () => {
+      const guard = new LoopGuard();
+      let now = 0;
+      for (let i = 0; i < 8; i++) {
+        now += 3_500;
+        // Typed while the agent was still answering the previous message.
+        const sentAt = now - 3_600;
+        expect(guard.incoming(K, botTexts[i], now, { sentAt })).toBeUndefined();
+        now += 2_000;
+        guard.replied(K, `reply ${i}`, now);
+      }
+    });
+
+    it('lets a person paste a few long texts among normal ones', () => {
+      const guard = new LoopGuard();
+      let now = 0;
+      for (let i = 0; i < 12; i++) {
+        // Every third message is a fast paste; the rest are typed slowly.
+        now += i % 3 === 0 ? 2_000 : 40_000;
+        expect(guard.incoming(K, botTexts[i], now)).toBeUndefined();
+        now += 2_000;
+        guard.replied(K, `reply ${i}`, now);
+      }
+    });
+  });
+
   it('normalizes case, spaces and punctuation', () => {
     expect(normalize('Thanks!! ')).toBe(normalize('thanks'));
     expect(normalize('😊')).toBe('😊');
