@@ -67,6 +67,7 @@ import {
   createConfirmationCheck,
   createReplyAgent,
   isChatSummary,
+  REPLY_RULES,
   type ReplyContext,
 } from './reply-agent';
 
@@ -552,6 +553,7 @@ export class ChatResponderService {
         toolbox?.filesPrompt ?? '',
         toolbox?.websitePrompt ?? '',
         isGroupJid(chat.peerJid) ? GROUP_CHAT_NOTE : '',
+        REPLY_RULES,
       ]
         .filter(Boolean)
         .join('\n\n');

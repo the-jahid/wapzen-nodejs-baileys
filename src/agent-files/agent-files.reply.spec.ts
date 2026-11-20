@@ -27,6 +27,7 @@ const modelCalls: { prompt: string; messages: BaseMessage[] }[] = [];
 jest.mock('../whatsapp/reply-agent', () => ({
   CHAT_REMEMBER_MESSAGES: 40,
   CHAT_SUMMARY_AT: 50,
+  REPLY_RULES: 'Rules for every reply.',
   isChatSummary: () => false,
   createConfirmationCheck: () => () =>
     Promise.resolve({ confirmed: false, missing: '' }),
@@ -218,5 +219,14 @@ describe('an agent sending a file', () => {
     await answer();
     expect(send).toHaveBeenCalledWith('Hello!');
     expect(modelCalls[0].prompt).not.toContain('send_file');
+  });
+
+  it("ends every prompt with the rules that keep the agent to the owner's facts", async () => {
+    const { answer } = setup({ listForReply: () => Promise.resolve([]) });
+    script.text = 'Hello!';
+    await answer();
+    expect(modelCalls[0].prompt).toBe(
+      'You sell burgers.\n\nRules for every reply.',
+    );
   });
 });
