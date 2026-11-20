@@ -67,6 +67,10 @@ export const MAX_WEBSITE_URL_CHARS = 500;
 // is stored: it must make a phone number (E.164, a missing country code taken
 // from the agent's own number) that WhatsApp says has an account.
 export const MAX_ORDER_NOTIFY_PHONE_CHARS = 40;
+// Human intervention: when to bring a person in (sent with every reply while
+// it's on) and the number told. Stored as typed, like the order-alert number.
+export const MAX_HUMAN_INTERVENTION_DESCRIPTION_CHARS = 1000;
+export const MAX_HUMAN_INTERVENTION_PHONE_CHARS = 40;
 
 // The built-in Take Order tool (tools.key).
 const ORDER_TOOL_KEY = 'take_order';
@@ -89,6 +93,13 @@ export type ChatAgentInput = {
   };
   media?: { voice_messages_enabled?: boolean; images_enabled?: boolean };
   website?: { website_enabled?: boolean; website_url?: string };
+  files?: { files_enabled?: boolean };
+  human_intervention?: {
+    human_intervention_enabled?: boolean;
+    human_intervention_description?: string;
+    human_intervention_phone?: string;
+    human_intervention_pause_ai?: boolean;
+  };
 };
 
 // One chat agent as the API returns it (ChatAgentResource in the contract).
@@ -114,6 +125,18 @@ export type ChatAgentResource = {
   media: { voice_messages_enabled: boolean; images_enabled: boolean };
   // The owner's website, which the agent reads while it replies when on.
   website: { website_enabled: boolean; website_url: string };
+  // Whether the agent sends the owner's uploaded images and files.
+  files: { files_enabled: boolean };
+  // When the agent should bring a person in, and the WhatsApp number it tells
+  // (from its own number; optional, '' = none). On while enabled and the
+  // description is filled in.
+  human_intervention: {
+    human_intervention_enabled: boolean;
+    human_intervention_description: string;
+    human_intervention_phone: string;
+    // After a sent alert, turn the AI off for that customer.
+    human_intervention_pause_ai: boolean;
+  };
   // Read-only. Only present while the agent has sent HOURLY_REPLY_LIMIT
   // replies this hour: when it starts answering again.
   hourly_limit_resets_at?: string;
@@ -181,6 +204,13 @@ export function toResource(
     website: {
       website_enabled: row.websiteEnabled,
       website_url: row.websiteUrl,
+    },
+    files: { files_enabled: row.filesEnabled },
+    human_intervention: {
+      human_intervention_enabled: row.humanInterventionEnabled,
+      human_intervention_description: row.humanInterventionDescription,
+      human_intervention_phone: row.humanInterventionPhone,
+      human_intervention_pause_ai: row.humanInterventionPauseAi,
     },
     ...hourlyLimit(row),
     ...trialState(row.user),
@@ -252,6 +282,13 @@ const SECTIONS: Record<
   },
   media: { voice_messages_enabled: 'boolean', images_enabled: 'boolean' },
   website: { website_enabled: 'boolean', website_url: 'string' },
+  files: { files_enabled: 'boolean' },
+  human_intervention: {
+    human_intervention_enabled: 'boolean',
+    human_intervention_description: 'string',
+    human_intervention_phone: 'string',
+    human_intervention_pause_ai: 'boolean',
+  },
   // Removed setting. Still accepted and ignored, so a dashboard page opened
   // while it existed can keep saving the agent.
   handover: { handover_enabled: 'boolean' },
@@ -312,6 +349,7 @@ export function validateCreate(req: ChatAgentInput): void {
   validateOrderInstructions(req.order?.order_instructions);
   validateOrderNotifyPhone(req.order?.order_notify_phone);
   validateWebsiteUrl(req.website?.website_url);
+  validateHumanIntervention(req.human_intervention);
 }
 
 export function validateUpdate(req: ChatAgentInput): void {
@@ -334,7 +372,12 @@ export function validateUpdate(req: ChatAgentInput): void {
     req.media?.voice_messages_enabled !== undefined ||
     req.media?.images_enabled !== undefined ||
     req.website?.website_enabled !== undefined ||
-    req.website?.website_url !== undefined;
+    req.website?.website_url !== undefined ||
+    req.files?.files_enabled !== undefined ||
+    req.human_intervention?.human_intervention_enabled !== undefined ||
+    req.human_intervention?.human_intervention_description !== undefined ||
+    req.human_intervention?.human_intervention_phone !== undefined ||
+    req.human_intervention?.human_intervention_pause_ai !== undefined;
   if (!hasChanges) throw badRequest('at least one setting is required');
 
   if (a?.name !== undefined && !a.name.trim()) {
@@ -351,12 +394,33 @@ export function validateUpdate(req: ChatAgentInput): void {
   validateOrderInstructions(req.order?.order_instructions);
   validateOrderNotifyPhone(req.order?.order_notify_phone);
   validateWebsiteUrl(req.website?.website_url);
+  validateHumanIntervention(req.human_intervention);
 }
 
 function validateOrderNotifyPhone(phone: string | undefined) {
   if (phone && [...phone.trim()].length > MAX_ORDER_NOTIFY_PHONE_CHARS) {
     throw badRequest(
       `order.order_notify_phone must be at most ${MAX_ORDER_NOTIFY_PHONE_CHARS} characters`,
+    );
+  }
+}
+
+function validateHumanIntervention(
+  section: ChatAgentInput['human_intervention'],
+) {
+  const description = section?.human_intervention_description;
+  if (
+    description &&
+    [...description.trim()].length > MAX_HUMAN_INTERVENTION_DESCRIPTION_CHARS
+  ) {
+    throw badRequest(
+      `human_intervention.human_intervention_description must be at most ${MAX_HUMAN_INTERVENTION_DESCRIPTION_CHARS} characters`,
+    );
+  }
+  const phone = section?.human_intervention_phone;
+  if (phone && [...phone.trim()].length > MAX_HUMAN_INTERVENTION_PHONE_CHARS) {
+    throw badRequest(
+      `human_intervention.human_intervention_phone must be at most ${MAX_HUMAN_INTERVENTION_PHONE_CHARS} characters`,
     );
   }
 }

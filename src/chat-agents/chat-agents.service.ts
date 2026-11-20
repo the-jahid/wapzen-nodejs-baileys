@@ -96,6 +96,12 @@ export class ChatAgentsService {
       req.order?.order_notify_phone ?? '',
       normalizeNullable(a.phone_number_id),
     );
+    const humanPhone = await this.checkedAlertNumber(
+      userId,
+      req.human_intervention?.human_intervention_phone ?? '',
+      normalizeNullable(a.phone_number_id),
+      HUMAN_ALERTS,
+    );
     return this.run('failed to create chat agent', async (tx) => {
       // Lock the user row so two concurrent creates can't both see room for
       // one more agent.
@@ -152,6 +158,15 @@ export class ChatAgentsService {
           imagesEnabled: req.media?.images_enabled ?? true,
           websiteEnabled: req.website?.website_enabled ?? false,
           websiteUrl: req.website?.website_url?.trim() ?? '',
+          filesEnabled: req.files?.files_enabled ?? true,
+          humanInterventionDescription: cleanText(
+            req.human_intervention?.human_intervention_description ?? '',
+          ),
+          humanInterventionEnabled:
+            req.human_intervention?.human_intervention_enabled ?? false,
+          humanInterventionPhone: humanPhone,
+          humanInterventionPauseAi:
+            req.human_intervention?.human_intervention_pause_ai ?? true,
           knowledgeBases: { create: knowledgeBaseRows(knowledgeBaseIds) },
           tools: { create: attachmentRows(toolIds) },
         },
@@ -168,7 +183,11 @@ export class ChatAgentsService {
   ): Promise<ChatAgentResource> {
     // Checked before the save is queued: asking WhatsApp takes a moment, and
     // the agent's other saves shouldn't wait on it.
-    const req = await this.withCheckedAlertNumber(userId, id, input);
+    const req = await this.withCheckedHumanNumber(
+      userId,
+      id,
+      await this.withCheckedAlertNumber(userId, id, input),
+    );
     const previous = this.saving.get(id) ?? Promise.resolve();
     const next = previous
       .catch(() => undefined)
@@ -271,6 +290,24 @@ export class ChatAgentsService {
       if (req.website?.website_url !== undefined) {
         data.websiteUrl = req.website.website_url.trim();
       }
+      if (req.files?.files_enabled !== undefined) {
+        data.filesEnabled = req.files.files_enabled;
+      }
+      const human = req.human_intervention;
+      if (human?.human_intervention_enabled !== undefined) {
+        data.humanInterventionEnabled = human.human_intervention_enabled;
+      }
+      if (human?.human_intervention_description !== undefined) {
+        data.humanInterventionDescription = cleanText(
+          human.human_intervention_description,
+        );
+      }
+      if (human?.human_intervention_phone !== undefined) {
+        data.humanInterventionPhone = human.human_intervention_phone.trim();
+      }
+      if (human?.human_intervention_pause_ai !== undefined) {
+        data.humanInterventionPauseAi = human.human_intervention_pause_ai;
+      }
       // An id list replaces the attached set wholesale; leaving it out keeps
       // the set as it is.
       const kbIds = req.knowledge_base?.knowledge_base_ids;
@@ -337,6 +374,40 @@ export class ChatAgentsService {
     return { ...req, order: { ...req.order, order_notify_phone: phone } };
   }
 
+  // The same for the human-intervention number: checked with WhatsApp before
+  // it's stored, unless it's cleared or the stored value is sent back.
+  private async withCheckedHumanNumber(
+    userId: string,
+    id: string,
+    req: ChatAgentInput,
+  ): Promise<ChatAgentInput> {
+    const raw = req.human_intervention?.human_intervention_phone?.trim();
+    if (!raw) return req;
+    const current = await this.prisma.chatAgent.findFirst({
+      where: { id, userId },
+      select: { humanInterventionPhone: true, phoneNumberId: true },
+    });
+    if (!current) throw notFound();
+    if (raw === current.humanInterventionPhone) return req;
+    const phoneNumberId =
+      req.agent?.phone_number_id !== undefined
+        ? normalizeNullable(req.agent.phone_number_id)
+        : current.phoneNumberId;
+    const phone = await this.checkedAlertNumber(
+      userId,
+      raw,
+      phoneNumberId,
+      HUMAN_ALERTS,
+    );
+    return {
+      ...req,
+      human_intervention: {
+        ...req.human_intervention,
+        human_intervention_phone: phone,
+      },
+    };
+  }
+
   // An order-alert number as it is stored: '' for none, otherwise E.164 once
   // WhatsApp has said the number has an account. Alerts are sent from the
   // agent's own number, so that number asks, and a number typed without a
@@ -345,13 +416,14 @@ export class ChatAgentsService {
     userId: string,
     raw: string,
     phoneNumberId: string | null,
+    alerts = 'order alerts',
   ): Promise<string> {
     const value = raw.trim();
     if (!value) return '';
     if (!phoneNumberId) {
       throw apiError(
         HttpStatus.CONFLICT,
-        'Link a WhatsApp number to this agent first: order alerts are sent from it.',
+        `Link a WhatsApp number to this agent first: ${alerts} are sent from it.`,
       );
     }
     const own = await this.prisma.phoneNumber.findFirst({
@@ -368,7 +440,7 @@ export class ChatAgentsService {
     if (!(await this.whatsapp.isOnWhatsApp(userId, phoneNumberId, phone))) {
       throw apiError(
         HttpStatus.BAD_REQUEST,
-        `${phone} isn't on WhatsApp, so it can't get order alerts. Check the number and try again.`,
+        `${phone} isn't on WhatsApp, so it can't get ${alerts}. Check the number and try again.`,
       );
     }
     return phone;
@@ -523,6 +595,9 @@ function knowledgeBaseRows(knowledgeBaseIds: string[]) {
     createdAt: new Date(start + i),
   }));
 }
+
+// What the human-intervention number gets, in the check's error messages.
+const HUMAN_ALERTS = 'human intervention alerts';
 
 function notFound() {
   return apiError(HttpStatus.NOT_FOUND, 'chat agent not found');

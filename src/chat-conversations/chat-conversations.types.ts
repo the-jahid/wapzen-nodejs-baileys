@@ -41,6 +41,9 @@ export type ChatConversationResource = {
   peer_name: string | null;
   status: string;
   ai_reply_enabled: boolean;
+  // Red "Human needed": the agent called a person and turned the AI off.
+  // Cleared when the AI goes back on.
+  needs_attention: boolean;
   message_count: number;
   last_message_role: string | null;
   last_message_at: string | null;
@@ -53,6 +56,8 @@ export type ChatConversationResource = {
 export type ConversationUpdate = {
   status?: string;
   aiReplyEnabled?: boolean;
+  // Only ever cleared from the dashboard; the agent raises it.
+  needsAttention?: false;
 };
 
 export function toResource(
@@ -68,6 +73,7 @@ export function toResource(
     peer_name: row.peerName,
     status: row.status,
     ai_reply_enabled: row.aiReplyEnabled,
+    needs_attention: row.needsAttention,
     message_count: row.messageCount,
     last_message_role: row.lastMessageRole,
     last_message_at: row.lastMessageAt?.toISOString() ?? null,
@@ -174,10 +180,10 @@ export function parseAfterSeq(raw?: string) {
 
 const UPDATE_FIELDS = ['status', 'ai_reply_enabled', 'needs_attention'];
 
-// The PATCH body: status and the AI switch may change, at least one of them;
-// the messages are what happened. needs_attention (the removed red flag's
-// "mark as done") is still accepted and ignored, so a dashboard tab opened
-// before the removal doesn't get an error.
+// The PATCH body: status, the AI switch and the red flag may change, at least
+// one of them; the messages are what happened. needs_attention can only be
+// cleared (false); true is accepted and ignored. Switching the AI on clears it
+// too (the service does that).
 export function parseUpdate(body: unknown): ConversationUpdate {
   const fields = asObject(body);
   const unknown = Object.keys(fields).find(
@@ -203,6 +209,9 @@ export function parseUpdate(body: unknown): ConversationUpdate {
   }
   update.aiReplyEnabled = optionalBoolean(fields, 'ai_reply_enabled');
   const markedDone = optionalBoolean(fields, 'needs_attention');
+  if (markedDone === false || update.aiReplyEnabled === true) {
+    update.needsAttention = false;
+  }
   if (
     Object.values(update).every((value) => value === undefined) &&
     markedDone === undefined

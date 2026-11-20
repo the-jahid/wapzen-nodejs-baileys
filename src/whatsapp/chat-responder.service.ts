@@ -43,6 +43,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { ChatWebsite } from '../tools/chat-toolbox';
 import { readWebsitePage, siteRoot } from '../website/website-reader';
 import { isGroupJid } from './group-chat';
+import {
+  type ChatHumanHelp,
+  HumanAlertLog,
+  humanAlertNotice,
+} from './human-alert';
 import { LoopGuard } from './loop-guard';
 import {
   imageDataUrl,
@@ -172,6 +177,8 @@ export class ChatResponderService {
   private readonly bursts = new Map<string, Burst>();
   // Catches an agent caught replying to another bot (loop-guard.ts).
   private readonly loops = new LoopGuard();
+  // When each chat last asked for a person (human-alert.ts).
+  private readonly humanAlerts = new HumanAlertLog();
   private agent?: ReturnType<typeof createReplyAgent>;
   private confirmationCheck?: ReturnType<typeof createConfirmationCheck>;
 
@@ -518,6 +525,7 @@ export class ChatResponderService {
         this.filesFor(agent, chat),
         websiteFor(agent),
       ]);
+      const humanHelp = this.humanHelpFor(agent, chat);
       const toolbox = ChatToolbox.for(
         agent.tools.map((t) => t.tool),
         agent.id,
@@ -525,6 +533,7 @@ export class ChatResponderService {
         orders,
         files,
         website,
+        humanHelp,
       );
       await this.loadHistory(key, chat);
       // Both ask a different service before the reply can start, so they run
@@ -552,6 +561,7 @@ export class ChatResponderService {
         toolbox?.takesOrders ? agent.orderInstructions.trim() : '',
         toolbox?.filesPrompt ?? '',
         toolbox?.websitePrompt ?? '',
+        toolbox?.humanHelpPrompt ?? '',
         isGroupJid(chat.peerJid) ? GROUP_CHAT_NOTE : '',
         REPLY_RULES,
       ]
@@ -868,12 +878,107 @@ export class ChatResponderService {
     );
   }
 
+  // What call_human does in this chat, when the owner switched it on and
+  // described when to bring a person in. It messages their number when they
+  // gave one and turns the AI off when they asked; with neither there's nothing
+  // to do. Not in groups: a group isn't one customer to hand over.
+  private humanHelpFor(
+    agent: ReplyingAgent,
+    chat: IncomingChat,
+  ): ChatHumanHelp | undefined {
+    // A row read before the columns existed has none of them.
+    if (agent.humanInterventionEnabled !== true) return undefined;
+    const when = (agent.humanInterventionDescription ?? '').trim();
+    const raw = (agent.humanInterventionPhone ?? '').trim();
+    if (!when || isGroupJid(chat.peerJid)) return undefined;
+    const to = raw ? toE164(raw, agent.phoneNumber?.phoneNumber) : null;
+    const sendTo = to ? chat.sendTo : undefined;
+    const pausesAi = agent.humanInterventionPauseAi === true;
+    if (!sendTo && !pausesAi) return undefined;
+    return {
+      when,
+      pausesAi,
+      call: async (reason) => {
+        const key = `${agent.id}|${chat.phoneNumberId}|${chat.peerJid}`;
+        if (!this.humanAlerts.claim(key)) return 'recent';
+        const label = `${agent.user.email} - ${agent.agentName}`;
+        if (!sendTo || !to) {
+          // No number: the red flag on the dashboard is the call.
+          await this.pauseForHuman(agent, chat, label);
+          return 'sent';
+        }
+        try {
+          const [{ peerPhone }] = await resolvePeerPhones(this.prisma, [
+            {
+              phoneNumberId: chat.phoneNumberId,
+              peerJid: chat.peerJid,
+              peerPhone: chat.peerPhone ?? null,
+            },
+          ]);
+          await sendTo(
+            to,
+            humanAlertNotice({
+              agentName: agent.agentName,
+              customerName: chat.peerName,
+              customerPhone: peerPhone,
+              reason,
+              lastMessage: chat.text,
+              aiPaused: pausesAi,
+            }),
+          );
+        } catch (err) {
+          this.humanAlerts.release(key);
+          activity(`human alert failed: ${label}: ${(err as Error).message}`);
+          throw err;
+        }
+        activity(`human alert sent: ${label}`);
+        if (pausesAi) await this.pauseForHuman(agent, chat, label);
+        return 'sent';
+      },
+    };
+  }
+
+  // After a sent alert, with the owner's say-so: the AI stops replying to this
+  // customer, exactly as the Conversations page switch does, so a person takes
+  // over, and the conversation is flagged red ("Human needed") until the AI is
+  // switched back on. The reply being written now still goes out. The thread is made if
+  // it's the customer's first message, since the turn is saved only after the
+  // reply. A failure is logged and the AI simply stays on.
+  private async pauseForHuman(
+    agent: ReplyingAgent,
+    chat: IncomingChat,
+    label: string,
+  ) {
+    try {
+      const id = await ensureConversation(this.prisma, {
+        userId: agent.userId,
+        phoneNumberId: chat.phoneNumberId,
+        chatAgentId: agent.id,
+        peerJid: chat.peerJid,
+        peerPhone: chat.peerPhone,
+        peerName: chat.peerName,
+      });
+      await this.prisma.chatConversation.update({
+        where: { id },
+        data: { aiReplyEnabled: false, needsAttention: true },
+      });
+      activity(`AI handed a chat to a person: ${label}`);
+    } catch (err) {
+      this.logger.error(
+        `turning AI off for ${chat.peerJid} after a human alert failed: ${(err as Error).message}`,
+      );
+    }
+  }
+
   // The files this agent can send in this chat. Trouble reading them is logged
   // and the agent answers without them.
   private async filesFor(
     agent: ReplyingAgent,
     chat: IncomingChat,
   ): Promise<ChatFile[]> {
+    // Switched off on the Images & Files card. A row read before the column
+    // existed has none, which means on.
+    if (agent.filesEnabled === false) return [];
     try {
       const files = await this.files.listForReply(agent.id);
       return files.map((file, i) => ({

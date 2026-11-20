@@ -8,6 +8,12 @@ import {
 } from '../orders/order-tool';
 import type { OrderResult } from '../orders/orders.service';
 import {
+  CALL_HUMAN_FUNCTION,
+  CALL_HUMAN_PARAMETERS,
+  type ChatHumanHelp,
+  humanHelpPrompt,
+} from '../whatsapp/human-alert';
+import {
   HOME_TEXT_CHARS,
   pageForModel,
   READ_WEBSITE_FUNCTION,
@@ -32,7 +38,8 @@ export type ToolDefinition = {
     parameters:
       | ReturnType<typeof parameterSchema | typeof orderParameters>
       | ReturnType<typeof fileParameters>
-      | typeof WEBSITE_PARAMETERS;
+      | typeof WEBSITE_PARAMETERS
+      | typeof CALL_HUMAN_PARAMETERS;
   };
 };
 
@@ -108,13 +115,14 @@ export class ChatToolbox {
     private readonly orders?: ChatOrders,
     private readonly files: ChatFile[] = [],
     private readonly website?: ChatWebsite,
+    private readonly humanHelp?: ChatHumanHelp,
   ) {}
 
   // The toolbox for one reply, or null when the agent has nothing it can do,
   // so callers never special-case an agent that only talks. Take Order joins
   // only when orders is given, so with ordering off the model can't call it,
-  // send_file only when the agent has files, and read_website only when it
-  // has a website to read.
+  // send_file only when the agent has files, read_website only when it
+  // has a website to read, and call_human only when the owner set it up.
   static for(
     tools: Tool[],
     agentId: string,
@@ -122,6 +130,7 @@ export class ChatToolbox {
     orders?: ChatOrders,
     files: ChatFile[] = [],
     website?: ChatWebsite,
+    humanHelp?: ChatHumanHelp,
   ): ChatToolbox | null {
     const box = new ChatToolbox(
       `chat agent ${agentId}`,
@@ -129,6 +138,7 @@ export class ChatToolbox {
       orders,
       files,
       website,
+      humanHelp,
     );
     for (const row of tools) {
       const tool = resolve(row);
@@ -154,7 +164,15 @@ export class ChatToolbox {
     // An owner's tool may have this name; with files to send, this one wins it.
     if (files.length) box.byName.delete(SEND_FILE_FUNCTION);
     if (website) box.byName.delete(READ_WEBSITE_FUNCTION);
-    return box.byName.size || files.length || website ? box : null;
+    if (humanHelp) box.byName.delete(CALL_HUMAN_FUNCTION);
+    return box.byName.size || files.length || website || humanHelp ? box : null;
+  }
+
+  // When to bring a person in and what to say after, for the prompt.
+  get humanHelpPrompt() {
+    return this.humanHelp
+      ? humanHelpPrompt(this.humanHelp.when, this.humanHelp.pausesAi)
+      : '';
   }
 
   // The website, its home page and how to read the rest, for the prompt.
@@ -266,6 +284,17 @@ export class ChatToolbox {
         },
       });
     }
+    if (this.humanHelp) {
+      definitions.push({
+        type: 'function',
+        function: {
+          name: CALL_HUMAN_FUNCTION,
+          description:
+            'Tells a person from the business team on WhatsApp that this chat needs them, in the cases your instructions describe.',
+          parameters: CALL_HUMAN_PARAMETERS,
+        },
+      });
+    }
     return definitions;
   }
 
@@ -300,6 +329,9 @@ export class ChatToolbox {
     }
     if (name === READ_WEBSITE_FUNCTION && this.website) {
       return this.readWebsite(this.website, args ?? {});
+    }
+    if (name === CALL_HUMAN_FUNCTION && this.humanHelp) {
+      return this.callHuman(this.humanHelp, args ?? {});
     }
     const tool = this.byName.get(name);
     if (!tool) return `Unknown tool "${name}".`;
@@ -375,6 +407,28 @@ export class ChatToolbox {
     }
     logger.log(`${this.label} sent a file on WhatsApp`);
     return 'The file has been sent on WhatsApp as its own message.';
+  }
+
+  // Alerts the owner's number; once per reply, and the cooldown is the
+  // responder's.
+  private humanCalled?: Promise<string>;
+  private callHuman(help: ChatHumanHelp, args: Record<string, unknown>) {
+    this.humanCalled ??= help
+      .call(argumentToString(args.reason).trim())
+      .then((outcome) => {
+        logger.log(`${this.label} called a human (${outcome})`);
+        return outcome === 'recent'
+          ? 'The team was already told about this chat a short while ago. Tell the person someone will get back to them here soon; do not call again.'
+          : help.pausesAi
+            ? 'A person from the team has been told on WhatsApp and will take over this chat. Tell the person someone will continue with them here soon. You will not reply in this chat again.'
+            : 'A person from the team has been told on WhatsApp. Tell the person someone will get back to them here soon.';
+      })
+      .catch((err: Error) => {
+        this.humanCalled = undefined;
+        logger.warn(`${this.label} could not call a human: ${err.message}`);
+        return "The team could not be reached right now. Don't say anyone was told; help as best you can.";
+      });
+    return this.humanCalled;
   }
 
   // A page of the owner's site, or why it couldn't be read, for the model.

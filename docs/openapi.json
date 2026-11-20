@@ -284,6 +284,43 @@
               }
             },
             "type": "object"
+          },
+          "files": {
+            "description": "Whether the agent sends the owner's uploaded images and files (uploaded on /v1/chat-agents/{id}/files). Off, they stay uploaded but are never sent.",
+            "properties": {
+              "files_enabled": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "human_intervention": {
+            "description": "Human intervention: when it is on and a chat matches the description, the agent calls a person in. It messages the optional number from its own number (customer, reason, last message, chat link), at most once per chat every 30 minutes, and with human_intervention_pause_ai turns the AI off for that customer and flags the conversation needs_attention. Not used in groups.",
+            "properties": {
+              "human_intervention_enabled": {
+                "default": false,
+                "description": "Human intervention on or off. On, the agent calls a person in when a chat matches the description.",
+                "type": "boolean"
+              },
+              "human_intervention_description": {
+                "default": "",
+                "description": "When the agent should bring a person in, in the owner's words. Added to the prompt while on. At most 1000 characters.",
+                "example": "The customer is angry, asks for a refund, or wants to talk to a person.",
+                "type": "string"
+              },
+              "human_intervention_phone": {
+                "default": "",
+                "description": "Optional WhatsApp number told (with country code, or local to the agent's number). Checked with WhatsApp from the agent's number before it is stored, as E.164; a number with no WhatsApp account is refused (400), and an agent with no number of its own can't add one (409). Empty = no message; the chat is then only flagged and the AI turned off (human_intervention_pause_ai).",
+                "type": "string"
+              },
+              "human_intervention_pause_ai": {
+                "default": true,
+                "description": "After an alert is sent, turn the AI off for that customer (the conversation's ai_reply_enabled) and flag the conversation needs_attention (red \"Human needed\"), so a person takes over. Turning the AI back on clears the flag. Off = the AI keeps replying. On by default.",
+                "type": "boolean"
+              }
+            },
+            "type": "object"
           }
         },
         "required": [
@@ -406,6 +443,10 @@
             "example": "2026-08-30T10:04:11Z",
             "format": "date-time",
             "type": "string"
+          },
+          "needs_attention": {
+            "description": "Red \"Human needed\": the agent called a person (human intervention) and turned the AI off. Cleared when ai_reply_enabled goes back on.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -726,6 +767,43 @@
                 "description": "The website's address, such as https://yourshop.com (a missing https:// is assumed). Stored as typed, up to 500 characters.",
                 "example": "https://yourshop.com",
                 "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "files": {
+            "description": "Whether the agent sends the owner's uploaded images and files (uploaded on /v1/chat-agents/{id}/files). Off, they stay uploaded but are never sent.",
+            "properties": {
+              "files_enabled": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "human_intervention": {
+            "description": "Human intervention: when it is on and a chat matches the description, the agent calls a person in. It messages the optional number from its own number (customer, reason, last message, chat link), at most once per chat every 30 minutes, and with human_intervention_pause_ai turns the AI off for that customer and flags the conversation needs_attention. Not used in groups.",
+            "properties": {
+              "human_intervention_enabled": {
+                "default": false,
+                "description": "Human intervention on or off. On, the agent calls a person in when a chat matches the description.",
+                "type": "boolean"
+              },
+              "human_intervention_description": {
+                "default": "",
+                "description": "When the agent should bring a person in, in the owner's words. Added to the prompt while on. At most 1000 characters.",
+                "example": "The customer is angry, asks for a refund, or wants to talk to a person.",
+                "type": "string"
+              },
+              "human_intervention_phone": {
+                "default": "",
+                "description": "Optional WhatsApp number told (with country code, or local to the agent's number). Checked with WhatsApp from the agent's number before it is stored, as E.164; a number with no WhatsApp account is refused (400), and an agent with no number of its own can't add one (409). Empty = no message; the chat is then only flagged and the AI turned off (human_intervention_pause_ai).",
+                "type": "string"
+              },
+              "human_intervention_pause_ai": {
+                "default": true,
+                "description": "After an alert is sent, turn the AI off for that customer (the conversation's ai_reply_enabled) and flag the conversation needs_attention (red \"Human needed\"), so a person takes over. Turning the AI back on clears the flag. Off = the AI keeps replying. On by default.",
+                "type": "boolean"
               }
             },
             "type": "object"
@@ -2502,6 +2580,43 @@
                 "description": "The website's address, such as https://yourshop.com (a missing https:// is assumed). Stored as typed, up to 500 characters.",
                 "example": "https://yourshop.com",
                 "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "files": {
+            "description": "Whether the agent sends the owner's uploaded images and files (uploaded on /v1/chat-agents/{id}/files). Off, they stay uploaded but are never sent.",
+            "properties": {
+              "files_enabled": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "human_intervention": {
+            "description": "Human intervention: when it is on and a chat matches the description, the agent calls a person in. It messages the optional number from its own number (customer, reason, last message, chat link), at most once per chat every 30 minutes, and with human_intervention_pause_ai turns the AI off for that customer and flags the conversation needs_attention. Not used in groups.",
+            "properties": {
+              "human_intervention_enabled": {
+                "default": false,
+                "description": "Human intervention on or off. On, the agent calls a person in when a chat matches the description.",
+                "type": "boolean"
+              },
+              "human_intervention_description": {
+                "default": "",
+                "description": "When the agent should bring a person in, in the owner's words. Added to the prompt while on. At most 1000 characters.",
+                "example": "The customer is angry, asks for a refund, or wants to talk to a person.",
+                "type": "string"
+              },
+              "human_intervention_phone": {
+                "default": "",
+                "description": "Optional WhatsApp number told (with country code, or local to the agent's number). Checked with WhatsApp from the agent's number before it is stored, as E.164; a number with no WhatsApp account is refused (400), and an agent with no number of its own can't add one (409). Empty = no message; the chat is then only flagged and the AI turned off (human_intervention_pause_ai).",
+                "type": "string"
+              },
+              "human_intervention_pause_ai": {
+                "default": true,
+                "description": "After an alert is sent, turn the AI off for that customer (the conversation's ai_reply_enabled) and flag the conversation needs_attention (red \"Human needed\"), so a person takes over. Turning the AI back on clears the flag. Off = the AI keeps replying. On by default.",
+                "type": "boolean"
               }
             },
             "type": "object"

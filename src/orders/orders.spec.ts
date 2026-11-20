@@ -747,6 +747,54 @@ describe('order_enabled', () => {
     ).rejects.toMatchObject({ status: 409 });
   });
 
+  it('stores a human-intervention number only once WhatsApp knows it, and it is optional', async () => {
+    const agents = new ChatAgentsService(
+      prisma as unknown as PrismaService,
+      {
+        removeForAgent: () => Promise.resolve(),
+      } as unknown as AgentFilesService,
+      {
+        isOnWhatsApp: (_userId: string, _id: string, phone: string) =>
+          Promise.resolve(phone !== '+8801799999999'),
+      } as unknown as WhatsAppService,
+    );
+    const { user, agent } = await newAccount('humancheck');
+
+    const untouched = await agents.get(user.id, agent.id);
+    expect(untouched.human_intervention).toEqual({
+      human_intervention_enabled: false,
+      human_intervention_description: '',
+      human_intervention_phone: '',
+      human_intervention_pause_ai: true,
+    });
+
+    // On with no number at all.
+    const on = await agents.update(user.id, agent.id, {
+      human_intervention: {
+        human_intervention_enabled: true,
+        human_intervention_description: 'Refunds',
+      },
+    });
+    expect(on.human_intervention.human_intervention_enabled).toBe(true);
+    expect(on.human_intervention.human_intervention_phone).toBe('');
+
+    const added = await agents.update(user.id, agent.id, {
+      human_intervention: { human_intervention_phone: '01711-333333' },
+    });
+    expect(added.human_intervention.human_intervention_phone).toBe(
+      '+8801711333333',
+    );
+    await expect(
+      agents.update(user.id, agent.id, {
+        human_intervention: { human_intervention_phone: '+8801799999999' },
+      }),
+    ).rejects.toThrow('human intervention alerts');
+    expect(
+      (await agents.get(user.id, agent.id)).human_intervention
+        .human_intervention_phone,
+    ).toBe('+8801711333333');
+  });
+
   it('turns ordering on when Take Order is attached, and lets it be turned off', async () => {
     const agents = new ChatAgentsService(
       prisma as unknown as PrismaService,
