@@ -507,6 +507,29 @@ export class WhatsAppService
     return { jid, ai_enabled: on };
   }
 
+  // Whether a phone number (E.164) has a WhatsApp account, asked from one of
+  // the user's linked numbers. Run before an order-alert number is saved, so a
+  // number no one can message is refused then instead of failing on every
+  // order later.
+  async isOnWhatsApp(userId: string, id: string, phone: string) {
+    const sock = await this.liveSocket(userId, id);
+    const digits = phone.replace(/\D/g, '');
+    try {
+      // An empty list is WhatsApp's "no account"; no list at all is no answer.
+      const found = await sock.onWhatsApp(`+${digits}`);
+      if (!found) throw new Error('no answer');
+      return found.some((hit) => hit.exists);
+    } catch (err) {
+      this.logger.warn(
+        `checking +${digits} on ${id}: ${(err as Error).message}`,
+      );
+      throw apiError(
+        HttpStatus.BAD_GATEWAY,
+        "Couldn't check this number with WhatsApp right now. Try again in a moment.",
+      );
+    }
+  }
+
   // The socket of one of the user's numbers, if it's linked and online.
   private async liveSocket(userId: string, id: string) {
     const row = await this.owned(userId, id);
@@ -556,7 +579,7 @@ export class WhatsAppService
   // uses, and a number that isn't on WhatsApp would otherwise swallow the
   // message without a word. If that lookup itself fails, the plain JID is used.
   private async sendToNumber(sock: WASocket, phone: string, text: string) {
-    const digits = phone.replace(/D/g, '');
+    const digits = phone.replace(/\D/g, '');
     const found = await sock.onWhatsApp(`+${digits}`).catch(() => undefined);
     if (found && !found.some((hit) => hit.exists)) {
       throw new Error(`+${digits} is not on WhatsApp`);

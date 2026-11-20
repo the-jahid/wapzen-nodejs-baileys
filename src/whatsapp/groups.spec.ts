@@ -799,6 +799,7 @@ describe('the free trial', () => {
     new ChatAgentsService(
       prisma as unknown as PrismaService,
       {} as AgentFilesService,
+      {} as WhatsAppService,
     );
 
   it('sends the last trial reply, then stops the agent', async () => {

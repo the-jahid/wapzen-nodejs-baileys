@@ -5,6 +5,7 @@ import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import { HttpException } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
 import type { AgentFilesService } from '../agent-files/agent-files.service';
+import type { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { ChatAgentsService } from '../chat-agents/chat-agents.service';
 import { PrismaClient } from '../generated/prisma/client';
 import { ToolsController } from '../tools/tools.controller';
@@ -40,6 +41,10 @@ import type { PrismaService } from '../prisma/prisma.service';
 // Nothing here reads config, and the package is ESM-only, which Jest can't load.
 jest.mock('@nestjs/config', () => ({ ConfigService: class {} }));
 jest.mock('../activity/activity');
+// Loads Baileys; each test hands ChatAgentsService a stub instead.
+jest.mock('../whatsapp/whatsapp.service', () => ({
+  WhatsAppService: class {},
+}));
 jest.setTimeout(60_000);
 
 const PORT = 55433;
@@ -641,7 +646,12 @@ describe('order_enabled', () => {
   it('reports orders_on only with the toggle on and the tool attached', async () => {
     const agents = new ChatAgentsService(
       prisma as unknown as PrismaService,
-      { removeForAgent: () => Promise.resolve() } as unknown as AgentFilesService,
+      {
+        removeForAgent: () => Promise.resolve(),
+      } as unknown as AgentFilesService,
+      {
+        isOnWhatsApp: () => Promise.resolve(true),
+      } as unknown as WhatsAppService,
     );
     const { user, agent } = await newAccount('agentapi');
     const tool = await prisma.tool.findFirstOrThrow({
@@ -666,7 +676,7 @@ describe('order_enabled', () => {
     expect(toggled.order).toEqual({
       order_enabled: true,
       order_instructions: 'Dhaka only x',
-      order_notify_phone: '+880 1711-111111',
+      order_notify_phone: '+8801711111111',
       orders_on: false,
     });
 
@@ -677,10 +687,73 @@ describe('order_enabled', () => {
     expect(attached.tools.tool_ids).toEqual([tool.id]);
   });
 
+  it('stores an order-alert number only once WhatsApp knows it', async () => {
+    const asked: string[] = [];
+    const agents = new ChatAgentsService(
+      prisma as unknown as PrismaService,
+      {
+        removeForAgent: () => Promise.resolve(),
+      } as unknown as AgentFilesService,
+      {
+        isOnWhatsApp: (_userId: string, _id: string, phone: string) => {
+          asked.push(phone);
+          return Promise.resolve(phone !== '+8801799999999');
+        },
+      } as unknown as WhatsAppService,
+    );
+    const { user, agent } = await newAccount('alertcheck');
+    const notifyPhone = async () =>
+      (await agents.get(user.id, agent.id)).order.order_notify_phone;
+
+    // Local form: the agent's own country code is added.
+    const added = await agents.update(user.id, agent.id, {
+      order: { order_notify_phone: '01711-222222' },
+    });
+    expect(added.order.order_notify_phone).toBe('+8801711222222');
+
+    // Not on WhatsApp, or not a number at all: refused, the saved one kept.
+    await expect(
+      agents.update(user.id, agent.id, {
+        order: { order_notify_phone: '+880 1799-999999' },
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      agents.update(user.id, agent.id, {
+        order: { order_notify_phone: '12ab' },
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(await notifyPhone()).toBe('+8801711222222');
+
+    // Sending the saved number back with another change asks no one.
+    const count = asked.length;
+    await agents.update(user.id, agent.id, {
+      order: { order_enabled: true, order_notify_phone: '+8801711222222' },
+    });
+    expect(asked).toHaveLength(count);
+
+    // Cleared without a check; an agent with no number can't add one.
+    await agents.update(user.id, agent.id, {
+      order: { order_notify_phone: '' },
+    });
+    expect(await notifyPhone()).toBe('');
+    await prisma.chatAgent.update({
+      where: { id: agent.id },
+      data: { phoneNumberId: null, status: 'inactive' },
+    });
+    await expect(
+      agents.update(user.id, agent.id, {
+        order: { order_notify_phone: '+8801711222222' },
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
   it('turns ordering on when Take Order is attached, and lets it be turned off', async () => {
     const agents = new ChatAgentsService(
       prisma as unknown as PrismaService,
-      { removeForAgent: () => Promise.resolve() } as unknown as AgentFilesService,
+      {
+        removeForAgent: () => Promise.resolve(),
+      } as unknown as AgentFilesService,
+      {} as WhatsAppService,
     );
     const { user, agent } = await newAccount('attachon');
     const tool = await prisma.tool.findFirstOrThrow({

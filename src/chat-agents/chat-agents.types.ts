@@ -63,8 +63,9 @@ export const MAX_ORDER_INSTRUCTIONS_CHARS = 4000;
 // still typing it, so only its length is checked here, and an address that
 // doesn't parse simply gives the agent no website to read.
 export const MAX_WEBSITE_URL_CHARS = 500;
-// The number told about orders is stored as typed too, for the same reason; one
-// that isn't a phone number just means no one is told.
+// The number told about orders. Unlike the fields above it is checked before it
+// is stored: it must make a phone number (E.164, a missing country code taken
+// from the agent's own number) that WhatsApp says has an account.
 export const MAX_ORDER_NOTIFY_PHONE_CHARS = 40;
 
 // The built-in Take Order tool (tools.key).

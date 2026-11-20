@@ -1,8 +1,9 @@
 import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { AgentFilesService } from '../agent-files/agent-files.service';
 import { Prisma } from '../generated/prisma/client';
-import { cleanText } from '../orders/orders.types';
+import { cleanText, toE164 } from '../orders/orders.types';
 import { PrismaService } from '../prisma/prisma.service';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import {
   apiError,
   ChatAgentInput,
@@ -51,6 +52,7 @@ export class ChatAgentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly files: AgentFilesService,
+    private readonly whatsapp: WhatsAppService,
   ) {}
 
   async list(userId: string, page: number, limit: number) {
@@ -84,8 +86,16 @@ export class ChatAgentsService {
     return toResource(row);
   }
 
-  create(userId: string, req: ChatAgentInput): Promise<ChatAgentResource> {
+  async create(
+    userId: string,
+    req: ChatAgentInput,
+  ): Promise<ChatAgentResource> {
     const a = req.agent!;
+    const notifyPhone = await this.checkedAlertNumber(
+      userId,
+      req.order?.order_notify_phone ?? '',
+      normalizeNullable(a.phone_number_id),
+    );
     return this.run('failed to create chat agent', async (tx) => {
       // Lock the user row so two concurrent creates can't both see room for
       // one more agent.
@@ -137,7 +147,7 @@ export class ChatAgentsService {
             (await includesTakeOrder(tx, toolIds)) ||
             (req.order?.order_enabled ?? false),
           orderInstructions: cleanText(req.order?.order_instructions ?? ''),
-          orderNotifyPhone: req.order?.order_notify_phone?.trim() ?? '',
+          orderNotifyPhone: notifyPhone,
           voiceMessagesEnabled: req.media?.voice_messages_enabled ?? true,
           imagesEnabled: req.media?.images_enabled ?? true,
           websiteEnabled: req.website?.website_enabled ?? false,
@@ -151,11 +161,14 @@ export class ChatAgentsService {
     });
   }
 
-  update(
+  async update(
     userId: string,
     id: string,
-    req: ChatAgentInput,
+    input: ChatAgentInput,
   ): Promise<ChatAgentResource> {
+    // Checked before the save is queued: asking WhatsApp takes a moment, and
+    // the agent's other saves shouldn't wait on it.
+    const req = await this.withCheckedAlertNumber(userId, id, input);
     const previous = this.saving.get(id) ?? Promise.resolve();
     const next = previous
       .catch(() => undefined)
@@ -299,6 +312,66 @@ export class ChatAgentsService {
       });
       return toResource(row);
     });
+  }
+
+  // The request with a new order-alert number replaced by its checked E.164
+  // form. Clearing it ('') and resending the stored value need no check.
+  private async withCheckedAlertNumber(
+    userId: string,
+    id: string,
+    req: ChatAgentInput,
+  ): Promise<ChatAgentInput> {
+    const raw = req.order?.order_notify_phone?.trim();
+    if (!raw) return req;
+    const current = await this.prisma.chatAgent.findFirst({
+      where: { id, userId },
+      select: { orderNotifyPhone: true, phoneNumberId: true },
+    });
+    if (!current) throw notFound();
+    if (raw === current.orderNotifyPhone) return req;
+    const phoneNumberId =
+      req.agent?.phone_number_id !== undefined
+        ? normalizeNullable(req.agent.phone_number_id)
+        : current.phoneNumberId;
+    const phone = await this.checkedAlertNumber(userId, raw, phoneNumberId);
+    return { ...req, order: { ...req.order, order_notify_phone: phone } };
+  }
+
+  // An order-alert number as it is stored: '' for none, otherwise E.164 once
+  // WhatsApp has said the number has an account. Alerts are sent from the
+  // agent's own number, so that number asks, and a number typed without a
+  // country code takes its code. Anything else is refused, not stored.
+  private async checkedAlertNumber(
+    userId: string,
+    raw: string,
+    phoneNumberId: string | null,
+  ): Promise<string> {
+    const value = raw.trim();
+    if (!value) return '';
+    if (!phoneNumberId) {
+      throw apiError(
+        HttpStatus.CONFLICT,
+        'Link a WhatsApp number to this agent first: order alerts are sent from it.',
+      );
+    }
+    const own = await this.prisma.phoneNumber.findFirst({
+      where: { id: phoneNumberId, userId },
+      select: { phoneNumber: true },
+    });
+    const phone = toE164(value, own?.phoneNumber);
+    if (!phone) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        "That isn't a valid phone number. Use digits with the country code, like +8801712345678.",
+      );
+    }
+    if (!(await this.whatsapp.isOnWhatsApp(userId, phoneNumberId, phone))) {
+      throw apiError(
+        HttpStatus.BAD_REQUEST,
+        `${phone} isn't on WhatsApp, so it can't get order alerts. Check the number and try again.`,
+      );
+    }
+    return phone;
   }
 
   async remove(userId: string, id: string) {
