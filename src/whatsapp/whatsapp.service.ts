@@ -50,6 +50,7 @@ import { apiError } from '../chat-agents/chat-agents.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { usePrismaAuthState } from './auth-state';
 import { ChatResponderService } from './chat-responder.service';
+import { type NumberProxy, proxyForNumber } from './proxy';
 import { ackStatusPostsPlainly } from './status-ack';
 import {
   contextInfoOf,
@@ -176,6 +177,9 @@ export class WhatsAppService
   // number's row; the dashboard keeps polling the login's id, so it's mapped.
   private readonly relinked = new Map<string, string>();
   private readonly traces = new WeakMap<WASocket, DeviceTrace>();
+  // The proxy each socket connects through, when WA_PROXY_URL is set: its
+  // media downloads must leave from the same address.
+  private readonly proxies = new WeakMap<WASocket, NumberProxy>();
   // What the last upload of each file came back as, by number and file: see
   // sendFileFrom.
   private readonly uploads = new RecentCache<{
@@ -912,9 +916,16 @@ export class WhatsAppService
     id: string,
     state: AuthenticationState,
     version: WAVersion,
+    pairWith?: string,
   ) {
+    // The number is known once linked, or from the start of a pairing-code
+    // login; a QR login only learns it when the phone scans.
+    const me = state.creds.me?.id;
+    const proxy = proxyForNumber(id, (me && jidDecode(me)?.user) || pairWith);
+    if (proxy) this.logger.log(`${id} connects through ${proxy.label}`);
     const sock = makeWASocket({
       version,
+      ...(proxy && { agent: proxy.agent, fetchAgent: proxy.fetchAgent }),
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, this.baileysLogger),
@@ -945,6 +956,7 @@ export class WhatsAppService
         mappingCache: RecentCache<string>;
       }
     ).mappingCache = new RecentCache(LID_CACHE_SIZE);
+    if (proxy) this.proxies.set(sock, proxy);
     // Status posts get a plain ack, not Baileys' error-500 nack (see the file).
     ackStatusPostsPlainly(sock, (err) =>
       this.logger.debug?.(`${id} status ack failed: ${err.message}`),
@@ -979,7 +991,7 @@ export class WhatsAppService
     // one for the same device.
     if (this.sockets.has(id)) return;
     this.aiGroups.set(id, new Set(groups.map((group) => group.groupJid)));
-    const sock = this.makeSocket(id, state, version);
+    const sock = this.makeSocket(id, state, version, opts.pairWith);
     this.sockets.set(id, sock);
     const trace: DeviceTrace = {};
     this.traces.set(sock, trace);
@@ -1245,6 +1257,7 @@ export class WhatsAppService
     const audio = content?.audioMessage;
     const media = audio ?? content?.imageMessage;
     if (!media) return undefined;
+    const dispatcher = this.proxies.get(sock)?.dispatcher;
     return {
       kind: audio ? 'voice' : 'image',
       mimetype: media.mimetype ?? '',
@@ -1254,7 +1267,7 @@ export class WhatsAppService
         downloadMediaMessage(
           message,
           'buffer',
-          {},
+          dispatcher ? { options: { dispatcher } as RequestInit } : {},
           {
             logger: this.baileysLogger,
             reuploadRequest: sock.updateMediaMessage,
