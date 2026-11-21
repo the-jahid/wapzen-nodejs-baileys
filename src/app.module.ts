@@ -8,6 +8,7 @@ import { ChatConversationsModule } from './chat-conversations/chat-conversations
 import { KnowledgeBasesModule } from './knowledge-bases/knowledge-bases.module';
 import { OrdersModule } from './orders/orders.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { SiteVisitsModule } from './site-visits/site-visits.module';
 import { ToolsModule } from './tools/tools.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { WhatsAppModule } from './whatsapp/whatsapp.module';
@@ -24,6 +25,7 @@ import { WhatsAppModule } from './whatsapp/whatsapp.module';
     ToolsModule,
     OrdersModule,
     AgentFilesModule,
+    SiteVisitsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
