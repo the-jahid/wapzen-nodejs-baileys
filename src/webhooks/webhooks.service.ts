@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { userSignedUp } from '../activity/activity';
 import { AgentFilesService } from '../agent-files/agent-files.service';
+import { createStarterAgent } from '../chat-agents/starter-agent';
 import { PrismaService } from '../prisma/prisma.service';
 
 // The parts of a Clerk user event this server reads.
@@ -49,13 +50,14 @@ export class WebhooksService {
           where: { oauthId: user.id },
           select: { id: true },
         });
-        await this.prisma.user.upsert({
+        const row = await this.prisma.user.upsert({
           where: { oauthId: user.id },
           create: { oauthId: user.id, email, username },
           update: { email, username },
         });
         if (event.type === 'user.created' && !existed) {
           userSignedUp(user.id, email);
+          await createStarterAgent(this.prisma, row.id);
         }
         return null;
       }
