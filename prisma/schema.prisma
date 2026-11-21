@@ -14,29 +14,29 @@ datasource db {
 
 // Mirrors the Go server's users table (migrations 00001 + 00059).
 model User {
-  id           String    @id @default(dbgenerated("(gen_random_uuid())::text"))
-  email        String    @unique
-  oauthId      String    @unique @map("oauth_id")
-  username     String?
+  id                String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  email             String    @unique
+  oauthId           String    @unique @map("oauth_id")
+  username          String?
   // An operator can block an account; setting this back to null unblocks it.
-  blockedAt    DateTime? @map("blocked_at") @db.Timestamptz
+  blockedAt         DateTime? @map("blocked_at") @db.Timestamptz
   // Until this time the account's agents skip the hourly AI reply limits
   // (HOURLY_REPLY_LIMIT and GROUP_HOURLY_REPLY_LIMIT). Set by hand for a
   // single account; null, or a time in the past, means the normal limits.
   noReplyLimitUntil DateTime? @map("no_reply_limit_until") @db.Timestamptz
   // Chat agents this account may hold; null means MAX_CHAT_AGENTS_PER_USER.
-  maxChatAgents Int? @map("max_chat_agents")
+  maxChatAgents     Int?      @map("max_chat_agents")
   // While noReplyLimitUntil is in the future the account is on a paid plan.
   // Otherwise it's on the free trial: FREE_TRIAL_REPLIES AI replies in all,
   // counted here; when they're used up trialEndedAt is stamped and its agents
   // can't go live again.
-  aiReplyCount Int       @default(0) @map("ai_reply_count")
-  trialEndedAt DateTime? @map("trial_ended_at") @db.Timestamptz
+  aiReplyCount      Int       @default(0) @map("ai_reply_count")
+  trialEndedAt      DateTime? @map("trial_ended_at") @db.Timestamptz
   // The last order number handed out, so a deleted order's number is never
   // reused. The first order is #1001.
-  lastOrderNumber Int    @default(1000) @map("last_order_number")
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  lastOrderNumber   Int       @default(1000) @map("last_order_number")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   chatAgents        ChatAgent[]
   phoneNumbers      PhoneNumber[]
@@ -45,69 +45,80 @@ model User {
   tools             Tool[]
   orders            Order[]
 
+  // The Go voice server's tables (migration 20261121000000_voice_agents).
+  // Voice shares nothing with chat but this user.
+  voiceAgents         VoiceAgent[]
+  voicePhoneNumbers   VoicePhoneNumber[]
+  voiceTools          VoiceTool[]
+  voiceKnowledgeBases VoiceKnowledgeBase[]
+  outboundCampaigns   OutboundCampaign[]
+  calls               Call[]
+  activityLogs        ActivityLog[]
+  qrScanAttempts      QrScanAttempt[]
+
   @@map("users")
 }
 
 // Mirrors the Go server's chat_agents table (migrations 00047–00060).
 // CHECK constraints can't be expressed in Prisma; they live in the migration SQL.
 model ChatAgent {
-  id            String   @id @default(dbgenerated("(gen_random_uuid())::text"))
-  userId        String   @map("user_id")
-  agentName     String   @map("agent_name")
-  phoneNumberId String?  @unique @map("phone_number_id")
+  id                           String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId                       String    @map("user_id")
+  agentName                    String    @map("agent_name")
+  phoneNumberId                String?   @unique @map("phone_number_id")
   // 'active' | 'inactive'; an active agent must have a phone number.
-  status        String   @default("inactive")
+  status                       String    @default("inactive")
   // Chat agents are locked to Claude Haiku 5.5.
-  modelProvider String   @default("anthropic") @map("model_provider")
-  modelName     String   @default("claude-haiku-5-5") @map("model_name")
+  modelProvider                String    @default("anthropic") @map("model_provider")
+  modelName                    String    @default("claude-haiku-5-5") @map("model_name")
   // 0.1 – 1.0
-  temperature   Float    @default(0.3) @map("model_temperature")
-  systemPrompt  String   @default("You are a helpful, friendly WhatsApp chat assistant.") @map("prompt_system_prompt")
+  temperature                  Float     @default(0.3) @map("model_temperature")
+  systemPrompt                 String    @default("You are a helpful, friendly WhatsApp chat assistant.") @map("prompt_system_prompt")
   // Orders are taken only when this is on AND the Take Order tool is attached.
-  orderEnabled  Boolean  @default(false) @map("order_enabled")
+  orderEnabled                 Boolean   @default(false) @map("order_enabled")
   // How the owner wants orders taken, added to the prompt while ordering is on.
-  orderInstructions String @default("") @map("order_instructions")
+  orderInstructions            String    @default("") @map("order_instructions")
   // A WhatsApp number told about each order the agent places or changes, sent
   // from the agent's own number. Optional and stored as typed; "" = no one.
-  orderNotifyPhone String @default("") @map("order_notify_phone")
+  orderNotifyPhone             String    @default("") @map("order_notify_phone")
   // Whether the agent answers voice messages (transcribed to text first) and
   // reads the photos people send. Off: voice messages go unanswered and a
   // photo is answered by its caption alone, as before these existed.
-  voiceMessagesEnabled Boolean @default(true) @map("voice_messages_enabled")
-  imagesEnabled        Boolean @default(true) @map("images_enabled")
+  voiceMessagesEnabled         Boolean   @default(true) @map("voice_messages_enabled")
+  imagesEnabled                Boolean   @default(true) @map("images_enabled")
   // Images & Files on/off: off, the agent sends none of the owner's uploaded
   // files (src/agent-files). They stay uploaded.
-  filesEnabled   Boolean @default(true) @map("files_enabled")
+  filesEnabled                 Boolean   @default(true) @map("files_enabled")
   // The owner's website, which the agent reads while it replies when
   // websiteEnabled is on (src/website/website-reader.ts). Stored as typed.
-  websiteUrl     String  @default("") @map("website_url")
-  websiteEnabled Boolean @default(false) @map("website_enabled")
+  websiteUrl                   String    @default("") @map("website_url")
+  websiteEnabled               Boolean   @default(false) @map("website_enabled")
   // Human intervention: when a chat matches the description, the agent calls a
   // person in (src/whatsapp/human-alert.ts): it messages the number, if there
   // is one, from its own. On while enabled and the description is filled in.
   // The number is optional and saved only once WhatsApp has said it has an
   // account (E.164).
-  humanInterventionEnabled     Boolean @default(false) @map("human_intervention_enabled")
-  humanInterventionDescription String @default("") @map("human_intervention_description")
-  humanInterventionPhone       String @default("") @map("human_intervention_phone")
+  humanInterventionEnabled     Boolean   @default(false) @map("human_intervention_enabled")
+  humanInterventionDescription String    @default("") @map("human_intervention_description")
+  humanInterventionPhone       String    @default("") @map("human_intervention_phone")
   // Whether a sent alert also turns the AI off for that customer
   // (chat_conversations.ai_reply_enabled) and flags the chat red
   // (needs_attention), so a person takes over. On by default.
-  humanInterventionPauseAi     Boolean @default(true) @map("human_intervention_pause_ai")
+  humanInterventionPauseAi     Boolean   @default(true) @map("human_intervention_pause_ai")
   // Unused: the human handover switch was removed the day it shipped
   // (2026-11-03). Kept so instances still running that code don't fail
   // mid-deploy; safe to drop in a later migration.
-  handoverEnabled Boolean @default(true) @map("handover_enabled")
+  handoverEnabled              Boolean   @default(true) @map("handover_enabled")
   // AI replies sent in the hour that started at hourlyWindowStartedAt; capped
   // at HOURLY_REPLY_LIMIT (chat-responder.service.ts). Not shown anywhere.
-  hourlyReplyCount      Int       @default(0) @map("hourly_reply_count")
-  hourlyWindowStartedAt DateTime? @map("hourly_window_started_at") @db.Timestamptz
+  hourlyReplyCount             Int       @default(0) @map("hourly_reply_count")
+  hourlyWindowStartedAt        DateTime? @map("hourly_window_started_at") @db.Timestamptz
   // The same for replies in groups, capped at GROUP_HOURLY_REPLY_LIMIT. A group
   // reply counts here and in hourlyReplyCount. Not shown anywhere.
-  groupHourlyReplyCount      Int       @default(0) @map("group_hourly_reply_count")
-  groupHourlyWindowStartedAt DateTime? @map("group_hourly_window_started_at") @db.Timestamptz
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  groupHourlyReplyCount        Int       @default(0) @map("group_hourly_reply_count")
+  groupHourlyWindowStartedAt   DateTime? @map("group_hourly_window_started_at") @db.Timestamptz
+  createdAt                    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   user           User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
   phoneNumber    PhoneNumber?             @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
@@ -187,34 +198,34 @@ model WhatsAppAuth {
 // SQL, with the CHECKs and the trigger that keeps messageCount,
 // lastMessageRole and lastMessageAt in step with chat_messages.
 model ChatConversation {
-  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
-  userId          String    @map("user_id")
-  phoneNumberId   String?   @map("phone_number_id")
-  chatAgentId     String?   @map("chat_agent_id")
+  id                String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId            String    @map("user_id")
+  phoneNumberId     String?   @map("phone_number_id")
+  chatAgentId       String?   @map("chat_agent_id")
   // The contact's WhatsApp JID as the message arrived, often "<lid>@lid".
-  peerJid         String    @map("peer_jid")
+  peerJid           String    @map("peer_jid")
   // E.164 when known; an "@lid" peer may have none.
-  peerPhone       String?   @map("peer_phone")
-  peerName        String?   @map("peer_name")
+  peerPhone         String?   @map("peer_phone")
+  peerName          String?   @map("peer_name")
   // The number the thread was on once its phone_numbers row is deleted, so
   // linking that number again can take the thread back.
-  formerPhoneNumber String? @map("former_phone_number")
+  formerPhoneNumber String?   @map("former_phone_number")
   // 'open' | 'closed'
-  status          String    @default("open")
+  status            String    @default("open")
   // Off: the agent stays quiet for this contact and a person answers.
-  aiReplyEnabled  Boolean   @default(true) @map("ai_reply_enabled")
+  aiReplyEnabled    Boolean   @default(true) @map("ai_reply_enabled")
   // Unused and always false: the red "needs you" flag was removed on
   // 2026-11-03 (its triggers are dropped). Kept so instances still running
   // the old code don't fail mid-deploy; safe to drop in a later migration.
   // Red "Human needed" flag: raised when the agent called a person and turned
   // the AI off (human intervention); cleared when the AI goes back on.
-  needsAttention  Boolean   @default(false) @map("needs_attention")
-  messageCount    Int       @default(0) @map("message_count")
+  needsAttention    Boolean   @default(false) @map("needs_attention")
+  messageCount      Int       @default(0) @map("message_count")
   // 'user' | 'assistant'
-  lastMessageRole String?   @map("last_message_role")
-  lastMessageAt   DateTime? @map("last_message_at") @db.Timestamptz
-  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  lastMessageRole   String?   @map("last_message_role")
+  lastMessageAt     DateTime? @map("last_message_at") @db.Timestamptz
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   phoneNumber PhoneNumber?  @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
@@ -396,6 +407,20 @@ model Order {
   @@map("orders")
 }
 
+// Website visitors for the public /status page: one row per visitor per
+// Bangladesh day. visitor_hash is made by the website from the day, IP and
+// browser; neither is stored.
+model SiteVisit {
+  day         DateTime @db.Date
+  visitorHash String   @map("visitor_hash")
+  // ISO 3166-1 alpha-2; null when unknown
+  country     String?
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@id([day, visitorHash])
+  @@map("site_visits")
+}
+
 // Images and documents agents send (src/agent-files, which queries it with
 // plain pg). No relations on purpose: see the migration.
 model AgentFile {
@@ -412,4 +437,309 @@ model AgentFile {
   @@index([chatAgentId, createdAt], map: "agent_files_agent_idx")
   @@index([userId], map: "agent_files_user_idx")
   @@map("agent_files")
+}
+
+// ---------------------------------------------------------------------------
+// The Go voice server's tables (server/, migration 20261121000000_voice_agents).
+// Both servers share this database and this schema is the only one; the Go
+// server reads and writes these with plain SQL and runs no migrations of its
+// own. CHECK constraints, partial indexes and the campaign-counter triggers
+// live in the migration SQL. whatsmeow's whatsmeow_* tables are created and
+// versioned by whatsmeow itself and are not modelled here.
+//
+// Voice is kept wholly apart from chat: these tables share nothing with chat's
+// but users.id. No voice model relates to a chat model, and where chat has a
+// table of the same kind (phone numbers, tools, knowledge bases) voice has its
+// own voice_* copy.
+// ---------------------------------------------------------------------------
+
+// A WhatsApp number paired for voice by QR or pairing code through whatsmeow.
+// The row is written once a scan has paired a device; waJid is that
+// whatsmeow_device.jid, and the session itself lives in whatsmeow's tables.
+model VoicePhoneNumber {
+  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId          String    @map("user_id")
+  // E.164
+  phoneNumber     String?   @map("phone_number")
+  label           String?
+  waJid           String?   @unique @map("wa_jid")
+  // 'pending_qr' | 'connected' | 'disconnected'
+  status          String    @default("pending_qr")
+  qrCode          String?   @map("qr_code")
+  lastConnectedAt DateTime? @map("last_connected_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  voiceAgents VoiceAgent[]
+  calls       Call[]
+
+  @@unique([userId, phoneNumber])
+  @@index([userId])
+  @@index([status])
+  @@map("voice_phone_numbers")
+}
+
+// An action a voice agent can take mid-call: 'api_request' | 'transfer_call' |
+// 'end_call' | 'send_text'. Attached to voice agents through agent_tools.
+model VoiceTool {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId      String   @map("user_id")
+  type        String
+  name        String   @map("tool_name")
+  description String
+  config      Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attachments AgentTool[]
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("voice_tools")
+}
+
+// A knowledge base a voice agent answers from, attached to at most one voice
+// agent. Its vectors live under pineconeNamespace ('kb_' + id without dashes).
+model VoiceKnowledgeBase {
+  id                String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId            String    @map("user_id")
+  agentId           String?   @map("agent_id")
+  name              String    @map("knowledge_base_name")
+  // 'in_progress' | 'complete' | 'error' | 'refreshing_in_progress'
+  status            String    @default("in_progress")
+  enableAutoRefresh Boolean   @default(false) @map("enable_auto_refresh")
+  lastRefreshedAt   DateTime? @map("last_refreshed_at") @db.Timestamptz
+  maxChunkSize      Int       @default(2000) @map("max_chunk_size")
+  minChunkSize      Int       @default(400) @map("min_chunk_size")
+  pineconeNamespace String?   @unique @map("pinecone_namespace")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+
+  user    User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent   VoiceAgent?                @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  sources VoiceKnowledgeBaseSource[]
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("voice_knowledge_bases")
+}
+
+// One source of a voice knowledge base. title is its vector record id.
+model VoiceKnowledgeBaseSource {
+  id              String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  knowledgeBaseId String   @map("knowledge_base_id")
+  // 'text' | 'file'
+  type            String   @default("text")
+  title           String
+  content         String
+  chunkCount      Int      @default(0) @map("chunk_count")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  knowledgeBase VoiceKnowledgeBase @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+
+  @@unique([knowledgeBaseId, title])
+  @@index([knowledgeBaseId, createdAt])
+  @@map("voice_knowledge_base_sources")
+}
+
+// A voice agent: answers and places WhatsApp calls. Only an active agent
+// (status = 'active') answers or places calls.
+model VoiceAgent {
+  id                         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId                     String   @map("user_id")
+  agentName                  String   @map("agent_name")
+  language                   String   @default("en-US")
+  timezone                   String?
+  // active | inactive
+  status                     String   @default("active")
+  promptBeginMessageMode     String   @default("agent_speaks_first") @map("prompt_begin_message_mode")
+  promptBeginMessage         String?  @default("Hello! How can I help you today?") @map("prompt_begin_message")
+  promptBeginMessageDelayMs  Int?     @default(1000) @map("prompt_begin_message_delay_ms")
+  promptSystemPrompt         String?  @default("You are a helpful, friendly voice assistant on a phone call. Keep responses clear and concise, speak naturally, and stay polite and professional at all times.") @map("prompt_system_prompt")
+  // OpenAI Realtime is the only live-call engine; these pick its voice.
+  voiceOpenaiVoiceId         String   @default("alloy") @map("voice_openai_voice_id")
+  voiceOpenaiVoiceName       String   @default("Alloy") @map("voice_openai_voice_name")
+  postCallAnalysisProvider   String   @default("openai") @map("post_call_analysis_provider")
+  postCallAnalysisModel      String?  @map("post_call_analysis_model")
+  createdAt                  DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                  DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  phoneNumberId              String?  @map("phone_number_id")
+  voiceOpenaiSpeed           Float    @default(1) @map("voice_openai_speed")
+  voiceOpenaiVolume          Float    @default(1) @map("voice_openai_volume")
+  voiceOpenaiRealtimeModel   String   @default("gpt-realtime-2.1-mini") @map("voice_openai_realtime_model")
+
+  user              User                 @relation(fields: [userId], references: [id], onDelete: Cascade, map: "agents_user_id_fkey")
+  phoneNumber       VoicePhoneNumber?    @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull, map: "agents_phone_number_id_fkey")
+  tools             AgentTool[]
+  knowledgeBases    VoiceKnowledgeBase[]
+  outboundCampaigns OutboundCampaign[]
+  calls             Call[]
+
+  @@unique([userId, agentName], map: "agents_user_id_agent_name_key")
+  @@index([userId], map: "idx_agents_user_id")
+  @@map("agents")
+}
+
+// Which voice tools a voice agent offers.
+model AgentTool {
+  agentId   String   @map("agent_id")
+  toolId    String   @map("tool_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  agent VoiceAgent @relation(fields: [agentId], references: [id], onDelete: Cascade, map: "agent_tools_agent_id_fkey")
+  tool  VoiceTool  @relation(fields: [toolId], references: [id], onDelete: Cascade, map: "agent_tools_tool_id_fkey")
+
+  @@id([agentId, toolId], map: "agent_tools_pkey")
+  @@index([toolId], map: "idx_agent_tools_tool_id")
+  @@map("agent_tools")
+}
+
+// An outbound calling campaign. The counters are kept by triggers on
+// campaign_leads and calls.
+model OutboundCampaign {
+  id                String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId            String    @map("user_id")
+  campaignName      String    @map("campaign_name")
+  // draft | running | paused | completed | failed
+  status            String    @default("draft")
+  leadsCount        Int       @default(0) @map("leads_count")
+  callsPlaced       Int       @default(0) @map("calls_placed")
+  answeredCalls     Int       @default(0) @map("answered_calls")
+  successfulCalls   Int       @default(0) @map("successful_calls")
+  todayCalls        Int       @default(0) @map("today_calls")
+  totalUsageSeconds Int       @default(0) @map("total_usage_seconds")
+  budgetUsd         Decimal?  @map("budget_usd") @db.Decimal(12, 2)
+  startedAt         DateTime? @map("started_at") @db.Timestamptz
+  completedAt       DateTime? @map("completed_at") @db.Timestamptz
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+  agentId           String?   @map("agent_id")
+
+  user  User           @relation(fields: [userId], references: [id], onDelete: Cascade, map: "outbound_campaigns_user_id_fkey")
+  agent VoiceAgent?    @relation(fields: [agentId], references: [id], onDelete: SetNull, map: "outbound_campaigns_agent_id_fkey")
+  leads CampaignLead[]
+  calls Call[]
+
+  @@unique([userId, campaignName], map: "idx_outbound_campaigns_user_name_unique")
+  @@index([userId], map: "idx_outbound_campaigns_user_id")
+  @@map("outbound_campaigns")
+}
+
+// A number an outbound campaign calls.
+model CampaignLead {
+  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  campaignId      String    @map("campaign_id")
+  // E.164
+  phoneNumber     String    @map("phone_number")
+  email           String?
+  firstName       String?   @map("first_name")
+  lastName        String?   @map("last_name")
+  // pending | calling | called | failed
+  status          String    @default("pending")
+  attempts        Int       @default(0)
+  lastAttemptedAt DateTime? @map("last_attempted_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+
+  campaign OutboundCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade, map: "campaign_leads_campaign_id_fkey")
+  calls    Call[]
+
+  @@unique([campaignId, phoneNumber], map: "campaign_leads_campaign_id_phone_number_key")
+  @@index([campaignId], map: "idx_campaign_leads_campaign_id")
+  @@index([campaignId, status], map: "idx_campaign_leads_campaign_status")
+  @@map("campaign_leads")
+}
+
+// One WhatsApp call, inbound or outbound.
+model Call {
+  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  // WhatsApp's own call id
+  callId          String    @map("call_id")
+  userId          String    @map("user_id")
+  phoneNumberId   String?   @map("phone_number_id")
+  peer            String
+  // received | answered | ended | declined | failed
+  status          String    @default("received")
+  endReason       String?   @map("end_reason")
+  answeredAt      DateTime? @map("answered_at") @db.Timestamptz
+  endedAt         DateTime? @map("ended_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+  // inbound | outbound
+  callType        String    @default("inbound") @map("call_type")
+  agentId         String?   @map("agent_id")
+  durationSeconds Int?      @map("duration_seconds")
+  campaignId      String?   @map("campaign_id")
+  leadId          String?   @map("lead_id")
+
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade, map: "calls_user_id_fkey")
+  phoneNumber VoicePhoneNumber? @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull, map: "calls_phone_number_id_fkey")
+  agent       VoiceAgent?       @relation(fields: [agentId], references: [id], onDelete: SetNull, map: "calls_agent_id_fkey")
+  campaign    OutboundCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull, map: "calls_campaign_id_fkey")
+  lead        CampaignLead?     @relation(fields: [leadId], references: [id], onDelete: SetNull, map: "calls_lead_id_fkey")
+  messages    CallMessage[]
+
+  @@index([callId], map: "idx_calls_call_id")
+  @@index([userId], map: "idx_calls_user_id")
+  @@index([phoneNumberId], map: "idx_calls_phone_number_id")
+  @@map("calls")
+}
+
+// One turn of a call transcript, ordered by seq.
+model CallMessage {
+  id        String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  callId    String   @map("call_id")
+  seq       Int
+  // user | assistant
+  role      String
+  content   String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade, map: "call_messages_call_id_fkey")
+
+  @@unique([callId, seq], map: "call_messages_call_id_seq_key")
+  @@map("call_messages")
+}
+
+// The Go server's per-user activity log (sign-ins, QR outcomes).
+model ActivityLog {
+  id        String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId    String   @map("user_id")
+  email     String
+  event     String
+  message   String
+  detail    String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, map: "activity_logs_user_id_fkey")
+
+  @@index([userId, createdAt(sort: Desc)], map: "idx_activity_logs_user_created")
+  @@index([event, createdAt(sort: Desc)], map: "idx_activity_logs_event_created")
+  @@map("activity_logs")
+}
+
+// One QR / pairing-code login the Go server ran, and how it ended.
+model QrScanAttempt {
+  id            String    @id
+  userId        String    @map("user_id")
+  email         String
+  phoneNumberId String?   @map("phone_number_id")
+  agentId       String?   @map("agent_id")
+  // started | worked | failed | cancelled
+  status        String    @default("started")
+  phoneNumber   String?   @map("phone_number")
+  failureReason String?   @map("failure_reason")
+  startedAt     DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  finishedAt    DateTime? @map("finished_at") @db.Timestamptz
+  // qr | phone_code
+  method        String    @default("qr")
+  userAgent     String?   @map("user_agent")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, map: "qr_scan_attempts_user_id_fkey")
+
+  @@index([userId, startedAt(sort: Desc)], map: "idx_qr_scan_attempts_user_started")
+  @@map("qr_scan_attempts")
 }
