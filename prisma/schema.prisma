@@ -53,6 +53,7 @@ model User {
   voiceKnowledgeBases VoiceKnowledgeBase[]
   outboundCampaigns   OutboundCampaign[]
   calls               Call[]
+  voiceUsage          VoiceUsage?
   activityLogs        ActivityLog[]
   qrScanAttempts      QrScanAttempt[]
 
@@ -686,6 +687,23 @@ model Call {
   @@index([userId], map: "idx_calls_user_id")
   @@index([phoneNumberId], map: "idx_calls_phone_number_id")
   @@map("calls")
+}
+
+// Voice call minutes for one account (migration 20261121000005_voice_usage).
+// Every account gets 600 seconds (10 minutes) free; more minutes are bought by
+// message and added by raising limitSeconds by hand. usedSeconds is a counter
+// the Go server adds each answered call's duration to, so deleting calls from
+// history never hands minutes back. No row = nothing used, default allowance.
+model VoiceUsage {
+  userId       String   @id @map("user_id")
+  usedSeconds  Int      @default(0) @map("used_seconds")
+  limitSeconds Int      @default(600) @map("limit_seconds")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("voice_usage")
 }
 
 // One turn of a call transcript, ordered by seq.
