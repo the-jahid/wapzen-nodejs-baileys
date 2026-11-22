@@ -561,8 +561,8 @@ model VoiceAgent {
   promptBeginMessageDelayMs  Int?     @default(1000) @map("prompt_begin_message_delay_ms")
   promptSystemPrompt         String?  @default("You are a helpful, friendly voice assistant on a phone call. Keep responses clear and concise, speak naturally, and stay polite and professional at all times.") @map("prompt_system_prompt")
   // OpenAI Realtime is the only live-call engine; these pick its voice.
-  voiceOpenaiVoiceId         String   @default("alloy") @map("voice_openai_voice_id")
-  voiceOpenaiVoiceName       String   @default("Alloy") @map("voice_openai_voice_name")
+  voiceOpenaiVoiceId         String   @default("zephyr") @map("voice_openai_voice_id")
+  voiceOpenaiVoiceName       String   @default("Zephyr") @map("voice_openai_voice_name")
   postCallAnalysisProvider   String   @default("openai") @map("post_call_analysis_provider")
   postCallAnalysisModel      String?  @map("post_call_analysis_model")
   createdAt                  DateTime @default(now()) @map("created_at") @db.Timestamptz
@@ -570,7 +570,7 @@ model VoiceAgent {
   phoneNumberId              String?  @map("phone_number_id")
   voiceOpenaiSpeed           Float    @default(1) @map("voice_openai_speed")
   voiceOpenaiVolume          Float    @default(1) @map("voice_openai_volume")
-  voiceOpenaiRealtimeModel   String   @default("gpt-realtime-2.1-mini") @map("voice_openai_realtime_model")
+  voiceOpenaiRealtimeModel   String   @default("gemini-3.8-live") @map("voice_openai_realtime_model")
 
   user              User                 @relation(fields: [userId], references: [id], onDelete: Cascade, map: "agents_user_id_fkey")
   phoneNumber       VoicePhoneNumber?    @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull, map: "agents_phone_number_id_fkey")
