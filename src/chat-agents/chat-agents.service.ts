@@ -102,83 +102,78 @@ export class ChatAgentsService {
       normalizeNullable(a.phone_number_id),
       HUMAN_ALERTS,
     );
-    const created = await this.run(
-      'failed to create chat agent',
-      async (tx) => {
-        // Lock the user row so two concurrent creates can't both see room for
-        // one more agent.
-        await tx.$queryRaw`SELECT 1 FROM users WHERE id = ${userId} FOR UPDATE`;
-        const owner = await tx.user.findUnique({
-          where: { id: userId },
-          select: { maxChatAgents: true },
-        });
-        if (
-          (await tx.chatAgent.count({ where: { userId } })) >=
-          (owner?.maxChatAgents ?? MAX_CHAT_AGENTS_PER_USER)
-        ) {
-          throw apiError(
-            HttpStatus.FORBIDDEN,
-            'you have reached the maximum number of chat agents for your account',
-            'chat_agent_limit',
-          );
-        }
-
-        const name = a.name!.trim();
-        const phoneNumberId = normalizeNullable(a.phone_number_id);
-        // An agent created with a number starts live unless the request says
-        // otherwise: connecting a number is the activation.
-        let status = a.status || (phoneNumberId ? 'active' : DEFAULT_STATUS);
-        if (status === 'active' && (await trialOver(tx, userId))) {
-          status = 'inactive';
-        }
-        await ensureNameFree(tx, userId, name);
-        await ensurePhoneNumberFree(tx, userId, phoneNumberId);
-        const knowledgeBaseIds = await ownedKnowledgeBaseIds(
-          tx,
-          userId,
-          req.knowledge_base?.knowledge_base_ids,
+    return this.run('failed to create chat agent', async (tx) => {
+      // Lock the user row so two concurrent creates can't both see room for
+      // one more agent.
+      await tx.$queryRaw`SELECT 1 FROM users WHERE id = ${userId} FOR UPDATE`;
+      const owner = await tx.user.findUnique({
+        where: { id: userId },
+        select: { maxChatAgents: true },
+      });
+      if (
+        (await tx.chatAgent.count({ where: { userId } })) >=
+        (owner?.maxChatAgents ?? MAX_CHAT_AGENTS_PER_USER)
+      ) {
+        throw apiError(
+          HttpStatus.FORBIDDEN,
+          'you have reached the maximum number of chat agents for your account',
+          'chat_agent_limit',
         );
-        const toolIds = await ownedToolIds(tx, userId, req.tools?.tool_ids);
+      }
 
-        const row = await tx.chatAgent.create({
-          data: {
-            userId,
-            agentName: name,
-            phoneNumberId,
-            status,
-            modelProvider: DEFAULT_PROVIDER,
-            modelName: DEFAULT_MODEL,
-            temperature: req.model?.temperature ?? DEFAULT_TEMPERATURE,
-            systemPrompt:
-              req.prompt?.system_prompt?.trim() || DEFAULT_SYSTEM_PROMPT,
-            orderEnabled:
-              (await includesTakeOrder(tx, toolIds)) ||
-              (req.order?.order_enabled ?? false),
-            orderInstructions: cleanText(req.order?.order_instructions ?? ''),
-            orderNotifyPhone: notifyPhone,
-            voiceMessagesEnabled: req.media?.voice_messages_enabled ?? true,
-            imagesEnabled: req.media?.images_enabled ?? true,
-            websiteEnabled: req.website?.website_enabled ?? false,
-            websiteUrl: req.website?.website_url?.trim() ?? '',
-            filesEnabled: req.files?.files_enabled ?? true,
-            humanInterventionDescription: cleanText(
-              req.human_intervention?.human_intervention_description ?? '',
-            ),
-            humanInterventionEnabled:
-              req.human_intervention?.human_intervention_enabled ?? false,
-            humanInterventionPhone: humanPhone,
-            humanInterventionPauseAi:
-              req.human_intervention?.human_intervention_pause_ai ?? true,
-            knowledgeBases: { create: knowledgeBaseRows(knowledgeBaseIds) },
-            tools: { create: attachmentRows(toolIds) },
-          },
-          include: resourceInclude,
-        });
-        return toResource(row);
-      },
-    );
-    this.openIfLive(created);
-    return created;
+      const name = a.name!.trim();
+      const phoneNumberId = normalizeNullable(a.phone_number_id);
+      // An agent created with a number starts live unless the request says
+      // otherwise: connecting a number is the activation.
+      let status = a.status || (phoneNumberId ? 'active' : DEFAULT_STATUS);
+      if (status === 'active' && (await trialOver(tx, userId))) {
+        status = 'inactive';
+      }
+      await ensureNameFree(tx, userId, name);
+      await ensurePhoneNumberFree(tx, userId, phoneNumberId);
+      const knowledgeBaseIds = await ownedKnowledgeBaseIds(
+        tx,
+        userId,
+        req.knowledge_base?.knowledge_base_ids,
+      );
+      const toolIds = await ownedToolIds(tx, userId, req.tools?.tool_ids);
+
+      const row = await tx.chatAgent.create({
+        data: {
+          userId,
+          agentName: name,
+          phoneNumberId,
+          status,
+          modelProvider: DEFAULT_PROVIDER,
+          modelName: DEFAULT_MODEL,
+          temperature: req.model?.temperature ?? DEFAULT_TEMPERATURE,
+          systemPrompt:
+            req.prompt?.system_prompt?.trim() || DEFAULT_SYSTEM_PROMPT,
+          orderEnabled:
+            (await includesTakeOrder(tx, toolIds)) ||
+            (req.order?.order_enabled ?? false),
+          orderInstructions: cleanText(req.order?.order_instructions ?? ''),
+          orderNotifyPhone: notifyPhone,
+          voiceMessagesEnabled: req.media?.voice_messages_enabled ?? true,
+          imagesEnabled: req.media?.images_enabled ?? true,
+          websiteEnabled: req.website?.website_enabled ?? false,
+          websiteUrl: req.website?.website_url?.trim() ?? '',
+          filesEnabled: req.files?.files_enabled ?? true,
+          humanInterventionDescription: cleanText(
+            req.human_intervention?.human_intervention_description ?? '',
+          ),
+          humanInterventionEnabled:
+            req.human_intervention?.human_intervention_enabled ?? false,
+          humanInterventionPhone: humanPhone,
+          humanInterventionPauseAi:
+            req.human_intervention?.human_intervention_pause_ai ?? true,
+          knowledgeBases: { create: knowledgeBaseRows(knowledgeBaseIds) },
+          tools: { create: attachmentRows(toolIds) },
+        },
+        include: resourceInclude,
+      });
+      return toResource(row);
+    });
   }
 
   async update(
@@ -196,11 +191,7 @@ export class ChatAgentsService {
     const previous = this.saving.get(id) ?? Promise.resolve();
     const next = previous
       .catch(() => undefined)
-      .then(() => this.save(userId, id, req))
-      .then((saved) => {
-        this.openIfLive(saved);
-        return saved;
-      });
+      .then(() => this.save(userId, id, req));
     this.saving.set(id, next);
     void next
       .catch(() => undefined)
@@ -208,15 +199,6 @@ export class ChatAgentsService {
         if (this.saving.get(id) === next) this.saving.delete(id);
       });
     return next;
-  }
-
-  // A live agent's number may be idle with no socket open (see
-  // WhatsAppService.syncOpenNumbers): open it now, so the agent answers from
-  // its first message rather than after the next idle check.
-  private openIfLive(agent: ChatAgentResource) {
-    if (agent.agent.status === 'active' && agent.agent.phone_number_id) {
-      this.whatsapp.openForAgent(agent.agent.phone_number_id);
-    }
   }
 
   private save(
