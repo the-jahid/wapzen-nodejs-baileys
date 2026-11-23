@@ -76,6 +76,7 @@ import {
   type ReplyContext,
 } from './reply-agent';
 import { createLanguageGuard } from './reply-language';
+import { toWhatsAppFormat } from './whatsapp-format';
 
 // People often send one thought as several quick messages. Each waits this
 // long for the next before the agent answers them all as one, so two replies
@@ -615,12 +616,14 @@ export class ChatResponderService {
       });
       // An order must never be placed in silence.
       const orderNumber = await toolbox?.placedOrderNumber();
-      const reply = await this.inOwnerLanguage(
-        apiKey,
-        agent,
-        (toolbox?.withoutFileMarks(generated) ?? generated) ||
-          (orderNumber ? `Your order #${orderNumber} is placed.` : ''),
-        await language,
+      const reply = toWhatsAppFormat(
+        await this.inOwnerLanguage(
+          apiKey,
+          agent,
+          (toolbox?.withoutFileMarks(generated) ?? generated) ||
+            (orderNumber ? `Your order #${orderNumber} is placed.` : ''),
+          await language,
+        ),
       );
       const sentFiles = toolbox?.sentFiles ?? [];
       if (!reply && !sentFiles.length) {
