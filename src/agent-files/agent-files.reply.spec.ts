@@ -24,6 +24,13 @@ jest.mock('../activity/activity');
 // What the model does next: which file_ids it asks for, and the text it writes.
 const script = { fileIds: [] as string[], text: '' };
 const modelCalls: { prompt: string; messages: BaseMessage[] }[] = [];
+// No language set: the reply language guard never rewrites here.
+jest.mock('../whatsapp/reply-language', () => ({
+  createLanguageGuard: () => ({
+    languageOf: () => Promise.resolve(''),
+    inLanguage: (text: string) => Promise.resolve({ text, rewritten: false }),
+  }),
+}));
 jest.mock('../whatsapp/reply-agent', () => ({
   CHAT_REMEMBER_MESSAGES: 40,
   CHAT_SUMMARY_AT: 50,

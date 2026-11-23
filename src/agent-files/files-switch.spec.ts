@@ -17,6 +17,13 @@ jest.mock('../knowledge-bases/indexer.service', () => ({
 }));
 jest.mock('../orders/orders.service', () => ({ OrdersService: class {} }));
 jest.mock('../activity/activity');
+// No language set: the reply language guard never rewrites here.
+jest.mock('../whatsapp/reply-language', () => ({
+  createLanguageGuard: () => ({
+    languageOf: () => Promise.resolve(''),
+    inLanguage: (text: string) => Promise.resolve({ text, rewritten: false }),
+  }),
+}));
 jest.mock('../whatsapp/reply-agent', () => ({
   CHAT_REMEMBER_MESSAGES: 40,
   CHAT_SUMMARY_AT: 50,

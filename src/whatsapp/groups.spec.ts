@@ -94,6 +94,13 @@ jest.mock('./auth-state', () => ({
 }));
 // The model: every call is kept, and every call answers the same.
 const modelCalls: { prompt: string; messages: BaseMessage[] }[] = [];
+// No language set: the reply language guard never rewrites here.
+jest.mock('./reply-language', () => ({
+  createLanguageGuard: () => ({
+    languageOf: () => Promise.resolve(''),
+    inLanguage: (text: string) => Promise.resolve({ text, rewritten: false }),
+  }),
+}));
 jest.mock('./reply-agent', () => ({
   CHAT_REMEMBER_MESSAGES: 40,
   CHAT_SUMMARY_AT: 50,

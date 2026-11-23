@@ -75,6 +75,7 @@ import {
   REPLY_RULES,
   type ReplyContext,
 } from './reply-agent';
+import { createLanguageGuard } from './reply-language';
 
 // People often send one thought as several quick messages. Each waits this
 // long for the next before the agent answers them all as one, so two replies
@@ -181,6 +182,7 @@ export class ChatResponderService {
   private readonly humanAlerts = new HumanAlertLog();
   private agent?: ReturnType<typeof createReplyAgent>;
   private confirmationCheck?: ReturnType<typeof createConfirmationCheck>;
+  private languageGuard?: ReturnType<typeof createLanguageGuard>;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -536,6 +538,9 @@ export class ChatResponderService {
         humanHelp,
       );
       await this.loadHistory(key, chat);
+      // The language the owner set, read from the prompt once and remembered:
+      // it runs alongside everything up to the reply, so it adds no wait.
+      const language = this.replyLanguage(apiKey, agent);
       // Both ask a different service before the reply can start, so they run
       // together.
       const [knowledge, check] = await Promise.all([
@@ -610,9 +615,13 @@ export class ChatResponderService {
       });
       // An order must never be placed in silence.
       const orderNumber = await toolbox?.placedOrderNumber();
-      const reply =
+      const reply = await this.inOwnerLanguage(
+        apiKey,
+        agent,
         (toolbox?.withoutFileMarks(generated) ?? generated) ||
-        (orderNumber ? `Your order #${orderNumber} is placed.` : '');
+          (orderNumber ? `Your order #${orderNumber} is placed.` : ''),
+        await language,
+      );
       const sentFiles = toolbox?.sentFiles ?? [];
       if (!reply && !sentFiles.length) {
         this.logger.warn(`chat agent ${agent.id} answered with no text`);
@@ -1000,6 +1009,46 @@ export class ChatResponderService {
         `chat agent ${agent.id} files lookup failed: ${(err as Error).message}`,
       );
       return [];
+    }
+  }
+
+  // The language every reply of this agent must be in, or '' when its owner
+  // set none or the lookup failed: a failed lookup must never stop a reply.
+  private async replyLanguage(apiKey: string, agent: ReplyingAgent) {
+    try {
+      this.languageGuard ??= createLanguageGuard(apiKey);
+      return await this.languageGuard.languageOf(agent.systemPrompt);
+    } catch (err) {
+      this.logger.warn(
+        `reading chat agent ${agent.id}'s reply language failed: ${(err as Error).message}`,
+      );
+      return '';
+    }
+  }
+
+  // The reply, rewritten in the owner's language when it came out in another
+  // one. A failed rewrite sends the reply as it was.
+  private async inOwnerLanguage(
+    apiKey: string,
+    agent: ReplyingAgent,
+    reply: string,
+    language: string,
+  ) {
+    if (!reply || !language) return reply;
+    try {
+      this.languageGuard ??= createLanguageGuard(apiKey);
+      const fixed = await this.languageGuard.inLanguage(reply, language);
+      if (fixed.rewritten) {
+        this.logger.log(
+          `chat agent ${agent.id} replied outside ${language}; rewritten`,
+        );
+      }
+      return fixed.text;
+    } catch (err) {
+      this.logger.warn(
+        `rewriting chat agent ${agent.id}'s reply in ${language} failed: ${(err as Error).message}`,
+      );
+      return reply;
     }
   }
 
