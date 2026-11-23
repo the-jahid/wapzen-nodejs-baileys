@@ -39,7 +39,7 @@ import {
 import { orderNotice } from '../orders/order-notice';
 import { OrdersService, type OrderResult } from '../orders/orders.service';
 import { toE164 } from '../orders/orders.types';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService, TX_OPTIONS } from '../prisma/prisma.service';
 import type { ChatWebsite } from '../tools/chat-toolbox';
 import { readWebsitePage, siteRoot } from '../website/website-reader';
 import { isGroupJid } from './group-chat';
@@ -628,6 +628,9 @@ export class ChatResponderService {
       const sentFiles = toolbox?.sentFiles ?? [];
       if (!reply && !sentFiles.length) {
         this.logger.warn(`chat agent ${agent.id} answered with no text`);
+        activity(
+          `AI reply empty: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
+        );
         return '';
       }
 
@@ -655,6 +658,11 @@ export class ChatResponderService {
     } catch (err) {
       this.logger.error(
         `chat agent ${agent.id} reply failed: ${(err as Error).message}`,
+      );
+      // An unanswered customer is what the owner notices, so the reason goes
+      // in the activity log, the part of the log that's always printed.
+      activity(
+        `AI reply failed: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}: ${(err as Error).message}`,
       );
       return '';
     } finally {
@@ -713,16 +721,19 @@ export class ChatResponderService {
   // by whichever call stamped it.
   private async endTrial(agent: ReplyingAgent) {
     try {
-      const [stamped] = await this.prisma.$transaction([
-        this.prisma.user.updateMany({
-          where: { id: agent.userId, trialEndedAt: null },
-          data: { trialEndedAt: new Date() },
-        }),
-        this.prisma.chatAgent.updateMany({
-          where: { userId: agent.userId, status: 'active' },
-          data: { status: 'inactive', updatedAt: new Date() },
-        }),
-      ]);
+      const [stamped] = await this.prisma.$transaction(
+        [
+          this.prisma.user.updateMany({
+            where: { id: agent.userId, trialEndedAt: null },
+            data: { trialEndedAt: new Date() },
+          }),
+          this.prisma.chatAgent.updateMany({
+            where: { userId: agent.userId, status: 'active' },
+            data: { status: 'inactive', updatedAt: new Date() },
+          }),
+        ],
+        TX_OPTIONS,
+      );
       if (stamped.count) {
         activity(
           `free trial ended: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,

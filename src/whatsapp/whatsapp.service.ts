@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
   HttpStatus,
   Injectable,
@@ -47,7 +48,7 @@ import {
 } from '../agent-files/agent-files.types';
 import { ensureAgentForNumber } from '../chat-agents/auto-agent';
 import { apiError } from '../chat-agents/chat-agents.types';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService, TX_OPTIONS } from '../prisma/prisma.service';
 import { usePrismaAuthState } from './auth-state';
 import { ChatResponderService } from './chat-responder.service';
 import { type NumberProxy, proxyForNumber } from './proxy';
@@ -139,6 +140,12 @@ const UNNAMED_SENDER = 'Someone';
 const UPLOAD_REUSE_MS = 6 * 60 * 60_000;
 // Uploads remembered at once. Each is a short message, not the file itself.
 const UPLOAD_CACHE_SIZE = 500;
+// A reply takes seconds to write, and the connection the message came in on
+// can drop meanwhile (a reconnect wave, a keepalive miss). The reply then waits
+// this long for the number to come back and goes out on the new connection,
+// instead of being thrown away with the customer left unanswered.
+const RESEND_WAIT_MS = 30_000;
+const RESEND_POLL_MS = 500;
 
 export class NumberNotConnectedError extends Error {
   constructor() {
@@ -599,6 +606,54 @@ export class WhatsAppService
     return sock.sendMessage(jid, { text });
   }
 
+  // The number's connection now. A reconnect replaces the socket a message
+  // came in on, so what answers it has to look again rather than keep that one.
+  private socketNow(id: string, arrivedOn: WASocket) {
+    return this.sockets.get(id) ?? arrivedOn;
+  }
+
+  // Sends on the number's current connection. If that connection closed
+  // before the message left (Baileys refuses to write to a closed socket, so
+  // nothing went out), it waits for the number to reconnect and sends once
+  // more on the new connection.
+  private async sendLive<T>(
+    id: string,
+    arrivedOn: WASocket,
+    send: (sock: WASocket) => Promise<T>,
+  ): Promise<T> {
+    const sock = this.socketNow(id, arrivedOn);
+    try {
+      return await send(sock);
+    } catch (err) {
+      if (!connectionClosed(err)) throw err;
+      const next = await this.reopened(id, sock);
+      if (!next) throw err;
+      this.logger.warn(
+        `${id} reconnected while a reply was on its way; resent`,
+      );
+      return send(next);
+    }
+  }
+
+  // The number's new connection once it's open, or undefined if it isn't back
+  // within RESEND_WAIT_MS.
+  private async reopened(id: string, closed: WASocket) {
+    const until = Date.now() + RESEND_WAIT_MS;
+    while (Date.now() < until && !this.shuttingDown) {
+      const sock = this.sockets.get(id);
+      if (
+        sock &&
+        sock !== closed &&
+        this.traces.get(sock)?.openedAt &&
+        sock.ws.isOpen
+      ) {
+        return sock;
+      }
+      await sleep(RESEND_POLL_MS);
+    }
+    return undefined;
+  }
+
   // The first send of a file uploads it. For a while after that, whoever asks
   // next gets a message pointing at that upload, so the file is neither read from
   // its database nor uploaded again. Each person's message is still encrypted for
@@ -873,13 +928,16 @@ export class WhatsAppService
     this.failures.delete(id);
     this.aiGroups.delete(id);
     this.groupLists.delete(id);
-    await this.prisma.$transaction([
-      this.prisma.chatAgent.updateMany({
-        where: { phoneNumberId: id },
-        data: { phoneNumberId: null, status: 'inactive' },
-      }),
-      this.prisma.phoneNumber.deleteMany({ where: { id } }),
-    ]);
+    await this.prisma.$transaction(
+      [
+        this.prisma.chatAgent.updateMany({
+          where: { phoneNumberId: id },
+          data: { phoneNumberId: null, status: 'inactive' },
+        }),
+        this.prisma.phoneNumber.deleteMany({ where: { id } }),
+      ],
+      TX_OPTIONS,
+    );
   }
 
   // An open socket has no row behind it any more: its account was deleted, or
@@ -1147,11 +1205,17 @@ export class WhatsAppService
         messageId: message.key.id ?? undefined,
         text,
         media,
-        send: (reply) => this.sendFrom(sock, jid, reply),
-        sendTo: (phone, text) => this.sendToNumber(sock, phone, text),
-        sendFile: (file) => this.sendFileFrom(id, sock, jid, file),
+        send: (reply) =>
+          this.sendLive(id, sock, (s) => this.sendFrom(s, jid, reply)),
+        sendTo: (phone, text) =>
+          this.sendLive(id, sock, (s) => this.sendToNumber(s, phone, text)),
+        sendFile: (file) =>
+          this.sendLive(id, sock, (s) => this.sendFileFrom(id, s, jid, file)),
         setTyping: (typing) =>
-          sock.sendPresenceUpdate(typing ? 'composing' : 'paused', jid),
+          this.socketNow(id, sock).sendPresenceUpdate(
+            typing ? 'composing' : 'paused',
+            jid,
+          ),
       })
       .catch((err: Error) =>
         this.logger.error(`answering on ${id} failed: ${err.message}`),
@@ -1198,10 +1262,15 @@ export class WhatsAppService
         messageId: message.key.id ?? undefined,
         text,
         media,
-        send: (reply) => this.sendFrom(sock, jid, reply),
-        sendFile: (file) => this.sendFileFrom(id, sock, jid, file),
+        send: (reply) =>
+          this.sendLive(id, sock, (s) => this.sendFrom(s, jid, reply)),
+        sendFile: (file) =>
+          this.sendLive(id, sock, (s) => this.sendFileFrom(id, s, jid, file)),
         setTyping: (typing) =>
-          sock.sendPresenceUpdate(typing ? 'composing' : 'paused', jid),
+          this.socketNow(id, sock).sendPresenceUpdate(
+            typing ? 'composing' : 'paused',
+            jid,
+          ),
       })
       .catch((err: Error) =>
         this.logger.error(
@@ -1364,20 +1433,23 @@ export class WhatsAppService
 
     this.sockets.delete(id);
     await sock.end(undefined);
-    await this.prisma.$transaction([
-      this.prisma.whatsAppAuth.deleteMany({
-        where: { phoneNumberId: targetId },
-      }),
-      this.prisma.whatsAppAuth.updateMany({
-        where: { phoneNumberId: id },
-        data: { phoneNumberId: targetId },
-      }),
-      this.prisma.phoneNumber.deleteMany({ where: { id } }),
-      this.prisma.phoneNumber.update({
-        where: { id: targetId },
-        data: { status: 'pending_qr', qrCode: null },
-      }),
-    ]);
+    await this.prisma.$transaction(
+      [
+        this.prisma.whatsAppAuth.deleteMany({
+          where: { phoneNumberId: targetId },
+        }),
+        this.prisma.whatsAppAuth.updateMany({
+          where: { phoneNumberId: id },
+          data: { phoneNumberId: targetId },
+        }),
+        this.prisma.phoneNumber.deleteMany({ where: { id } }),
+        this.prisma.phoneNumber.update({
+          where: { id: targetId },
+          data: { status: 'pending_qr', qrCode: null },
+        }),
+      ],
+      TX_OPTIONS,
+    );
     this.relinked.set(id, targetId);
     this.logger.log(`${id} relinked onto existing number ${targetId}`);
     // Reconnecting with the moved keys marks the row connected.
@@ -1615,6 +1687,17 @@ function ownJids(sock: WASocket) {
 function closeCode(error: Error | undefined): number | undefined {
   return (error as { output?: { statusCode?: number } } | undefined)?.output
     ?.statusCode;
+}
+
+// Baileys' "Connection Closed": thrown before anything is written when the
+// socket is no longer open, so sending again can't make a duplicate. A timeout
+// isn't one of these: that message may well have reached WhatsApp.
+export function connectionClosed(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return (
+    closeCode(err) === DisconnectReason.connectionClosed ||
+    err.message === 'Connection Closed'
+  );
 }
 
 function describeRestriction(lock: ReachoutTimelockState) {

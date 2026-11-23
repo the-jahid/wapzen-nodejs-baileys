@@ -21,6 +21,14 @@ const IDLE_MS = 5 * 60_000;
 const CONNECT_TIMEOUT_MS = 20_000;
 const CONNECT_ATTEMPTS = 3;
 
+// Options for every $transaction. Prisma's defaults give a transaction 2s to
+// get a connection and 5s to finish. With ~200 numbers writing Signal keys,
+// a reconnect wave keeps all POOL_SIZE connections busy for longer than 2s, and
+// transactions failed with P2028 "Unable to start a transaction in the given
+// time" (deleting a number, replacing a link, 2026-11-23). Agent saves hit the
+// same limits on 2026-11-18.
+export const TX_OPTIONS = { maxWait: 10_000, timeout: 20_000 };
+
 // A failed connect() never sent a query, so it is always safe to try again.
 // pool.query() goes through connect() too, so this covers every statement.
 class RetryingPool extends Pool {
