@@ -93,6 +93,24 @@ const MAX_RECONNECT_DELAY_MS = 5 * 60_000;
 // drops the sockets again. A number that takes longer stops holding its slot.
 const RESUME_CONCURRENCY = 5;
 const RESUME_SLOT_MS = 30_000;
+// Only a number whose chat agent is active keeps a socket open. With no active
+// agent nothing is answered or saved, so the socket would only hold memory.
+// Such an idle number stays linked (its keys stay in the database) and opens
+// again when its agent goes live, or for a while when the dashboard needs it
+// (sending, reading groups, checking an alert number). How often the open
+// sockets are checked against the agents:
+const IDLE_CHECK_MS = 60_000;
+// How long an idle number stays open after a dashboard action or a new link.
+const WAKE_LEASE_MS = 15 * 60_000;
+// How long a dashboard action waits for an idle number to open.
+const WAKE_TIMEOUT_MS = 25_000;
+// An idle number is opened briefly once a week, so WhatsApp never sees the
+// device as abandoned and drops it from the phone's Linked devices. A few per
+// check at most: numbers that went idle together would otherwise all come due
+// in the same minute.
+const CHECK_IN_EVERY_MS = 7 * 24 * 60 * 60_000;
+const CHECK_IN_LEASE_MS = 3 * 60_000;
+const CHECK_INS_PER_PASS = 3;
 // Longer than any login lasts. A deploy starts the new server while the old
 // one is still running its logins, so a pending row younger than this may be
 // someone scanning right now, and the old server is gone by the time it passes.
@@ -193,6 +211,15 @@ export class WhatsAppService
     string,
     { at: number; groups: Promise<GroupSummary[]> }
   >();
+  // Idle numbers kept open for now, by row id: until when (see WAKE_LEASE_MS).
+  private readonly leases = new Map<string, number>();
+  // Numbers waiting out a reconnect delay. The idle check leaves them to their
+  // timer rather than jump the backoff.
+  private readonly retrying = new Set<string>();
+  // When each idle number's weekly check-in was last tried, so one that never
+  // opens is tried once a week, not at every check.
+  private readonly checkInsTried = new Map<string, number>();
+  private checkingIdle = false;
   private shuttingDown = false;
   private version?: { value: WAVersion; at: number };
 
@@ -209,6 +236,11 @@ export class WhatsAppService
     );
     this.reportMemory();
     setInterval(() => this.reportMemory(), MEMORY_REPORT_MS).unref();
+    setInterval(() => {
+      this.syncOpenNumbers().catch((err: Error) =>
+        this.logger.error(`checking idle numbers failed: ${err.message}`),
+      );
+    }, IDLE_CHECK_MS).unref();
   }
 
   // One activity line on how full the heap is and how many numbers are open,
@@ -216,9 +248,13 @@ export class WhatsAppService
   private reportMemory() {
     const mb = (bytes: number) => Math.round(bytes / 1048576);
     const { heapUsed, rss, external } = process.memoryUsage();
+    const idle = [...this.leases.keys()].filter((id) =>
+      this.sockets.has(id),
+    ).length;
     activity(
       `memory: heap ${mb(heapUsed)} of ${heapLimitMb()} MB, rss ${mb(rss)} MB, ` +
-        `external ${mb(external)} MB, ${this.sockets.size} numbers open, ` +
+        `external ${mb(external)} MB, ${this.sockets.size} numbers open ` +
+        `(${idle} of them idle), ` +
         `${this.logins.size} logins, ${this.responder.chatsInMemory()} chats remembered`,
     );
   }
@@ -257,19 +293,143 @@ export class WhatsAppService
     });
   }
 
-  private async resumeLinked() {
-    const linked = await this.prisma.phoneNumber.findMany({
-      where: { waJid: { not: null }, authValues: { some: { key: 'creds' } } },
+  private resumeLinked() {
+    return this.syncOpenNumbers();
+  }
+
+  // Opens the linked numbers that should be open and closes the idle ones: see
+  // IDLE_CHECK_MS. Runs after a restart and then every IDLE_CHECK_MS, which is
+  // also what picks up an agent switched on or off outside the dashboard (the
+  // free trial ending, a change made in the database).
+  private async syncOpenNumbers() {
+    if (this.checkingIdle || this.shuttingDown) return;
+    this.checkingIdle = true;
+    try {
+      const linked = await this.prisma.phoneNumber.findMany({
+        where: {
+          waJid: { not: null },
+          authValues: { some: { key: 'creds' } },
+        },
+        select: {
+          id: true,
+          lastConnectedAt: true,
+          chatAgent: { select: { status: true } },
+        },
+      });
+      const now = Date.now();
+      for (const [id, until] of this.leases) {
+        if (until <= now) this.leases.delete(id);
+      }
+
+      const toOpen: string[] = [];
+      const toClose: string[] = [];
+      let checkIns = 0;
+      for (const row of linked) {
+        const active = row.chatAgent?.status === 'active';
+        if (active) this.leases.delete(row.id);
+        const open = this.sockets.has(row.id);
+        const lastSeen = Math.max(
+          row.lastConnectedAt?.getTime() ?? 0,
+          this.checkInsTried.get(row.id) ?? 0,
+        );
+        const checkInDue =
+          !active &&
+          !open &&
+          !this.leases.has(row.id) &&
+          checkIns < CHECK_INS_PER_PASS &&
+          now - lastSeen > CHECK_IN_EVERY_MS;
+        if (checkInDue) {
+          checkIns++;
+          this.checkInsTried.set(row.id, now);
+          this.leases.set(row.id, now + CHECK_IN_LEASE_MS);
+        }
+        const wanted = active || this.leases.has(row.id);
+        if (wanted && !open && !this.retrying.has(row.id)) toOpen.push(row.id);
+        // A login in progress is never cut off, whatever its agent says.
+        if (!wanted && open && !this.logins.has(row.id)) toClose.push(row.id);
+      }
+
+      for (const id of toClose) this.closeIdle(id);
+      if (toClose.length) {
+        this.logger.log(`closed ${toClose.length} idle number(s)`);
+      }
+
+      let next = 0;
+      const worker = async () => {
+        while (!this.shuttingDown && next < toOpen.length) {
+          const id = toOpen[next++];
+          if (!this.sockets.has(id)) await this.connectAndWait(id);
+        }
+      };
+      await Promise.all(Array.from({ length: RESUME_CONCURRENCY }, worker));
+    } finally {
+      this.checkingIdle = false;
+    }
+  }
+
+  // Closes a linked number that has no active agent. The row keeps its status
+  // and the device stays linked; only the socket and what it holds in memory
+  // go. Closing on purpose isn't a disconnect: see handleClose's first check.
+  private closeIdle(id: string) {
+    this.stopSocket(id);
+    this.failures.delete(id);
+    this.aiGroups.delete(id);
+    this.groupLists.delete(id);
+  }
+
+  // Opens an idle number for something the dashboard needs it for, and keeps
+  // it open for WAKE_LEASE_MS. Resolves with its socket once it has opened,
+  // or with whatever is there after WAKE_TIMEOUT_MS.
+  private async wake(id: string): Promise<WASocket | undefined> {
+    this.leases.set(id, Date.now() + WAKE_LEASE_MS);
+    if (this.sockets.has(id) || this.retrying.has(id)) {
+      return this.sockets.get(id);
+    }
+    if (!(await this.isLinked(id))) return undefined;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, WAKE_TIMEOUT_MS);
+      const done = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this.connect(id, { onSettled: done }).catch((err: Error) => {
+        this.logger.error(`waking ${id} failed: ${err.message}`);
+        done();
+      });
+    });
+    const sock = this.sockets.get(id);
+    return sock && this.traces.get(sock)?.openedAt ? sock : undefined;
+  }
+
+  // A chat agent was just switched on with this number: open it now rather
+  // than at the next idle check. Nothing happens if it's open already.
+  openForAgent(id: string) {
+    if (this.shuttingDown || this.sockets.has(id) || this.retrying.has(id)) {
+      return;
+    }
+    // An idle check that read the agent just before it was switched on would
+    // otherwise close this socket again; the next check sees it active.
+    this.leases.set(id, Date.now() + 2 * IDLE_CHECK_MS);
+    void (async () => {
+      if (!(await this.isLinked(id)) || this.sockets.has(id)) return;
+      await this.connect(id);
+    })().catch((err: Error) =>
+      this.logger.error(`opening ${id} for its agent failed: ${err.message}`),
+    );
+  }
+
+  // Whether a row is a linked device with its keys: opening one without them
+  // would start a new login and put a QR code on the row.
+  private async isLinked(id: string) {
+    const row = await this.prisma.phoneNumber.findFirst({
+      where: {
+        id,
+        waJid: { not: null },
+        authValues: { some: { key: 'creds' } },
+      },
       select: { id: true },
     });
-    let next = 0;
-    const worker = async () => {
-      while (!this.shuttingDown && next < linked.length) {
-        const { id } = linked[next++];
-        if (!this.sockets.has(id)) await this.connectAndWait(id);
-      }
-    };
-    await Promise.all(Array.from({ length: RESUME_CONCURRENCY }, worker));
+    return !!row;
   }
 
   // Opens a linked number and resolves once it has opened or closed, or
@@ -431,15 +591,25 @@ export class WhatsAppService
   // Sends a text on one of the user's numbers, for a person replying from the
   // dashboard. Only a linked number that is online can send.
   async sendText(userId: string, id: string, jid: string, text: string) {
-    const sock = this.sockets.get(id);
     const row = await this.prisma.phoneNumber.findFirst({
       where: { id, userId },
       select: { status: true },
     });
-    if (!sock || row?.status !== 'connected' || this.logins.has(id)) {
+    if (row?.status !== 'connected' || this.logins.has(id)) {
       throw new NumberNotConnectedError();
     }
+    const sock = await this.socketFor(id);
+    if (!sock) throw new NumberNotConnectedError();
     await this.sendFrom(sock, jid, text);
+  }
+
+  // A connected number's socket, opening it first if it's idle. An idle number
+  // in use stays open WAKE_LEASE_MS past its last use.
+  private async socketFor(id: string) {
+    const sock = this.sockets.get(id);
+    if (!sock) return this.wake(id);
+    if (this.leases.has(id)) this.leases.set(id, Date.now() + WAKE_LEASE_MS);
+    return sock;
   }
 
   // The groups a linked number is in, each with whether the AI is on there, and
@@ -537,8 +707,11 @@ export class WhatsAppService
   // The socket of one of the user's numbers, if it's linked and online.
   private async liveSocket(userId: string, id: string) {
     const row = await this.owned(userId, id);
-    const sock = this.sockets.get(id);
-    if (!sock || row.status !== 'connected' || this.logins.has(id)) {
+    const sock =
+      row.status === 'connected' && !this.logins.has(id)
+        ? await this.socketFor(id)
+        : undefined;
+    if (!sock) {
       throw apiError(
         HttpStatus.CONFLICT,
         'This number is offline. Reconnect it on the Phone Numbers page and try again.',
@@ -871,6 +1044,8 @@ export class WhatsAppService
   private async deleteRow(id: string) {
     this.logins.delete(id);
     this.failures.delete(id);
+    this.leases.delete(id);
+    this.checkInsTried.delete(id);
     this.aiGroups.delete(id);
     this.groupLists.delete(id);
     await this.prisma.$transaction([
@@ -1280,6 +1455,10 @@ export class WhatsAppService
     const login = this.logins.get(id);
     this.logins.delete(id);
     this.failures.delete(id);
+    // A number just linked stays open a while even if its agent isn't active
+    // (the free trial is over, say): the owner is on the dashboard setting it
+    // up, and closing it under them would make it look broken.
+    if (login) this.leases.set(id, Date.now() + WAKE_LEASE_MS);
     const waJid = sock.user?.id ?? null;
     const user = waJid ? jidDecode(waJid)?.user : undefined;
     const phoneNumber = user ? `+${user}` : null;
@@ -1379,6 +1558,7 @@ export class WhatsAppService
       }),
     ]);
     this.relinked.set(id, targetId);
+    this.leases.set(targetId, Date.now() + WAKE_LEASE_MS);
     this.logger.log(`${id} relinked onto existing number ${targetId}`);
     // Reconnecting with the moved keys marks the row connected.
     await this.connect(targetId);
@@ -1427,7 +1607,10 @@ export class WhatsAppService
       return;
     }
 
-    const row = await this.prisma.phoneNumber.findUnique({ where: { id } });
+    const row = await this.prisma.phoneNumber.findUnique({
+      where: { id },
+      include: { chatAgent: { select: { status: true } } },
+    });
     if (!row) return;
 
     // A login nobody finished. One that never linked anything is dropped,
@@ -1452,6 +1635,19 @@ export class WhatsAppService
         where: { id },
         data: { status: 'disconnected', qrCode: null },
       });
+      return;
+    }
+
+    // An idle number that dropped isn't worth a retry: it stays linked and
+    // closed, keeping its status, until its agent goes live or the dashboard
+    // needs it. A just-paired one still gets its retries.
+    if (
+      !login &&
+      row.chatAgent?.status !== 'active' &&
+      (this.leases.get(id) ?? 0) <= Date.now()
+    ) {
+      this.failures.delete(id);
+      this.leases.delete(id);
       return;
     }
 
@@ -1481,7 +1677,9 @@ export class WhatsAppService
         MAX_RECONNECT_DELAY_MS,
       ) *
       (0.5 + Math.random());
+    this.retrying.add(id);
     setTimeout(() => {
+      this.retrying.delete(id);
       if (this.shuttingDown || this.sockets.has(id)) return;
       this.connect(id).catch((err: Error) =>
         this.logger.error(`reconnect ${id} failed: ${err.message}`),
