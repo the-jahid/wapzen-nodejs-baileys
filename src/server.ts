@@ -6,6 +6,7 @@ import { OpenAPIObject, SwaggerModule } from '@nestjs/swagger';
 import compression from 'compression';
 import { activity } from './activity/activity';
 import { AppModule } from './app.module';
+import { memoryLimitMb, watchMemory } from './memory-guard';
 import { applyMigrations } from './migrate';
 
 // Node ends the process on a rejected promise nobody caught. One stray rejection
@@ -87,5 +88,8 @@ async function bootstrap() {
   SwaggerModule.setup('docs', app, document);
 
   await app.listen(port);
+
+  const limitMb = memoryLimitMb();
+  if (limitMb) watchMemory(limitMb);
 }
 void bootstrap();

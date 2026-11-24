@@ -51,7 +51,9 @@ import { apiError } from '../chat-agents/chat-agents.types';
 import { PrismaService, TX_OPTIONS } from '../prisma/prisma.service';
 import { usePrismaAuthState } from './auth-state';
 import { ChatResponderService } from './chat-responder.service';
+import { KeyCache } from './key-cache';
 import { type NumberProxy, proxyForNumber } from './proxy';
+import { withSharedAsyncStorage } from './shared-async-storage';
 import { ackStatusPostsPlainly } from './status-ack';
 import {
   contextInfoOf,
@@ -121,6 +123,8 @@ const KEYS_REFUSED = new Set<number>([
 const STALE_MESSAGE_SECONDS = 5 * 60;
 // How often the log gets a memory line (reportMemory).
 const MEMORY_REPORT_MS = 15 * 60_000;
+// How often what has expired in memory is dropped (sweep).
+const SWEEP_MS = 60_000;
 // LID<->phone mappings kept in memory per number (two per contact). Baileys'
 // own cache keeps every one for 7 days with no cap, ~1 KB a contact, and the
 // history sync at link time loads the whole address book into it: megabytes
@@ -187,6 +191,10 @@ export class WhatsAppService
   // The proxy each socket connects through, when WA_PROXY_URL is set: its
   // media downloads must leave from the same address.
   private readonly proxies = new WeakMap<WASocket, NumberProxy>();
+  // Each socket's recently used Signal keys.
+  private readonly keyCaches = new WeakMap<WASocket, KeyCache>();
+  // Connections made since the start, reconnects included.
+  private socketsMade = 0;
   // What the last upload of each file came back as, by number and file: see
   // sendFileFrom.
   private readonly uploads = new RecentCache<{
@@ -216,18 +224,30 @@ export class WhatsAppService
     );
     this.reportMemory();
     setInterval(() => this.reportMemory(), MEMORY_REPORT_MS).unref();
+    setInterval(() => this.sweep(), SWEEP_MS).unref();
   }
 
   // One activity line on how full the heap is and how many numbers are open,
   // so a heap that keeps growing shows up in the log hours before it runs out.
   private reportMemory() {
     const mb = (bytes: number) => Math.round(bytes / 1048576);
-    const { heapUsed, rss, external } = process.memoryUsage();
+    const { heapUsed, rss, external, arrayBuffers } = process.memoryUsage();
     activity(
       `memory: heap ${mb(heapUsed)} of ${heapLimitMb()} MB, rss ${mb(rss)} MB, ` +
-        `external ${mb(external)} MB, ${this.sockets.size} numbers open, ` +
+        `external ${mb(external)} MB (buffers ${mb(arrayBuffers)} MB), ` +
+        `${this.sockets.size} numbers open, ${this.socketsMade} connections made, ` +
         `${this.logins.size} logins`,
     );
+  }
+
+  private sweep() {
+    const now = Date.now();
+    for (const sock of this.sockets.values()) {
+      this.keyCaches.get(sock)?.sweep(now);
+    }
+    for (const [id, { at }] of this.groupLists) {
+      if (now - at >= GROUP_LIST_TTL_MS) this.groupLists.delete(id);
+    }
   }
 
   private async resumeSessions() {
@@ -981,32 +1001,47 @@ export class WhatsAppService
     const me = state.creds.me?.id;
     const proxy = proxyForNumber(id, (me && jidDecode(me)?.user) || pairWith);
     if (proxy) this.logger.log(`${id} connects through ${proxy.label}`);
-    const sock = makeWASocket({
-      version,
-      ...(proxy && { agent: proxy.agent, fetchAgent: proxy.fetchAgent }),
-      auth: {
-        creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, this.baileysLogger),
-      },
-      logger: this.baileysLogger,
-      browser: BROWSER,
-      markOnlineOnConnect: false,
-      // Old messages aren't answered, so there's no point downloading them.
-      syncFullHistory: false,
-      // Status updates, channels and groups the AI is off in never get a reply,
-      // so Baileys acks them without decrypting or storing their sender keys.
-      // On a busy number that is most of the traffic, and most of the CPU. A
-      // group switched on later has no sender keys yet: the first message from
-      // each person can't be read, so Baileys asks for it again.
-      shouldIgnoreJid: (jid) =>
-        isJidGroup(jid)
-          ? !this.aiGroups.get(id)?.has(jid)
-          : isJidBroadcast(jid) || isJidNewsletter(jid),
-      // What this socket sends isn't reported back as a new message, so a
-      // message "from me" can only be one a person sent from the phone (or
-      // another linked device), which is saved on that customer's thread.
-      emitOwnEvents: false,
-    });
+    const keyCache = new KeyCache();
+    const { result: sock, shared } = withSharedAsyncStorage(() =>
+      makeWASocket({
+        version,
+        ...(proxy && { agent: proxy.agent, fetchAgent: proxy.fetchAgent }),
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(
+            state.keys,
+            this.baileysLogger,
+            keyCache,
+          ),
+        },
+        logger: this.baileysLogger,
+        browser: BROWSER,
+        markOnlineOnConnect: false,
+        // Old messages aren't answered, so there's no point downloading them.
+        syncFullHistory: false,
+        // Status updates, channels and groups the AI is off in never get a reply,
+        // so Baileys acks them without decrypting or storing their sender keys.
+        // On a busy number that is most of the traffic, and most of the CPU. A
+        // group switched on later has no sender keys yet: the first message from
+        // each person can't be read, so Baileys asks for it again.
+        shouldIgnoreJid: (jid) =>
+          isJidGroup(jid)
+            ? !this.aiGroups.get(id)?.has(jid)
+            : isJidBroadcast(jid) || isJidNewsletter(jid),
+        // What this socket sends isn't reported back as a new message, so a
+        // message "from me" can only be one a person sent from the phone (or
+        // another linked device), which is saved on that customer's thread.
+        emitOwnEvents: false,
+      }),
+    );
+    this.keyCaches.set(sock, keyCache);
+    this.socketsMade += 1;
+    // Said once, so a Baileys update that brings the leak back shows in the log.
+    if (!shared && this.socketsMade === 1) {
+      activity(
+        'memory: the sockets do not share their async storage, check shared-async-storage.ts against this Baileys',
+      );
+    }
     // Swapped in before the socket connects, so the history sync fills the
     // capped cache, not Baileys' uncapped one.
     (

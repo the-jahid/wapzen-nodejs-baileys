@@ -486,6 +486,24 @@ describe('memory kept in this process', () => {
     expect(Object.keys(saver.storage)).toEqual(['c:x']);
   });
 
+  it('holds no more bytes than its limit, whatever the number of threads', async () => {
+    // Too small for two threads, so only the latest is kept.
+    const saver = new RamMemorySaver(100, 1);
+    const app = ram(saver);
+    for (const thread of ['a:x', 'b:x', 'b:x', 'c:x']) {
+      await answer(app, thread, bring(2));
+    }
+    expect(Object.keys(saver.storage)).toEqual(['c:x']);
+
+    // Forgetting a thread gives its bytes back.
+    const roomy = new RamMemorySaver();
+    const other = ram(roomy);
+    await answer(other, 'a:x', bring(2));
+    await answer(other, 'b:x', bring(2));
+    await roomy.forget(['a', 'b']);
+    expect((roomy as unknown as { bytes: number }).bytes).toBe(0);
+  });
+
   const service = (flag: string | undefined, db: unknown) =>
     new ChatMemoryService(
       { pool: db } as PrismaService,
