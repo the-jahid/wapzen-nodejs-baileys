@@ -123,6 +123,8 @@ type ReplyingAgent = ChatAgent & {
   user: { email: string; noReplyLimitUntil: Date | null };
 };
 
+type ReplyQuotaAgent = Pick<ReplyingAgent, 'id' | 'userId' | 'agentName' | 'phoneNumber' | 'user'>;
+
 export type IncomingChat = {
   phoneNumberId: string;
   // The WhatsApp chat the message came from; the reply goes back to it.
@@ -200,6 +202,35 @@ export class ChatResponderService {
     private readonly files: AgentFilesService,
     @Optional() private readonly memory?: ChatMemoryService,
   ) {}
+
+  hasPendingReply(phoneNumberId: string, peerJid: string) {
+    return this.bursts.has(`${phoneNumberId}|${peerJid}`);
+  }
+
+  async sendWithFollowUpQuota(
+    agent: ReplyQuotaAgent,
+    send: () => Promise<boolean>,
+  ): Promise<'sent' | 'skipped' | 'limited'> {
+    const trialCount = await this.claimTrialReply(agent);
+    if (trialCount === false) return 'limited';
+    if (!(await this.claimReply(agent, false))) {
+      await this.releaseTrialReply(agent);
+      return 'limited';
+    }
+
+    let sent = false;
+    try {
+      sent = await send();
+      if (!sent) return 'skipped';
+      if (trialCount === FREE_TRIAL_REPLIES) await this.endTrial(agent);
+      return 'sent';
+    } finally {
+      if (!sent) {
+        await this.releaseReply(agent, false);
+        await this.releaseTrialReply(agent);
+      }
+    }
+  }
 
   // Queues a message to be answered with any others the person sends in the
   // same burst. A message lost here (a restart inside the wait) goes unanswered,
@@ -660,7 +691,7 @@ export class ChatResponderService {
   // plan, or the count failed: that mustn't silence the agent), or false when
   // the trial is used up, which also stops the account's agents.
   private async claimTrialReply(
-    agent: ReplyingAgent,
+    agent: ReplyQuotaAgent,
   ): Promise<number | boolean> {
     if (onPaidPlan(agent.user)) return true;
     try {
@@ -682,7 +713,7 @@ export class ChatResponderService {
   }
 
   // Hands back a trial reply claimed for a message that got no answer.
-  private async releaseTrialReply(agent: ReplyingAgent) {
+  private async releaseTrialReply(agent: ReplyQuotaAgent) {
     if (onPaidPlan(agent.user)) return;
     await this.prisma.user
       .updateMany({
@@ -699,7 +730,7 @@ export class ChatResponderService {
   // The free trial is used up: the account is marked and all its agents go
   // inactive, which the dashboard shows with the paid-plan card. Logged once,
   // by whichever call stamped it.
-  private async endTrial(agent: ReplyingAgent) {
+  private async endTrial(agent: ReplyQuotaAgent) {
     try {
       const [stamped] = await this.prisma.$transaction(
         [
@@ -731,7 +762,7 @@ export class ChatResponderService {
   // window older than an hour starts over at this reply. A reply in a group also
   // takes one from the agent's group hour, in the same statement, so it's never
   // counted in one and refused by the other. False at either limit.
-  private async claimReply(agent: ReplyingAgent, inGroup: boolean) {
+  private async claimReply(agent: ReplyQuotaAgent, inGroup: boolean) {
     // Not counted at all, so the dashboard never shows the agent paused.
     if (!HOURLY_LIMITS_ON || noReplyLimit(agent)) return true;
     try {
@@ -790,7 +821,7 @@ export class ChatResponderService {
   }
 
   // Hands back a reply claimed for a message that got no answer.
-  private async releaseReply(agent: ReplyingAgent, inGroup: boolean) {
+  private async releaseReply(agent: ReplyQuotaAgent, inGroup: boolean) {
     if (!HOURLY_LIMITS_ON || noReplyLimit(agent)) return;
     await this.prisma.chatAgent
       .updateMany({
@@ -1277,7 +1308,7 @@ export class ChatResponderService {
 // Whether the agent's account is let off the hourly reply limits right now
 // (users.no_reply_limit_until, set by hand). Checked again on release, so a
 // reply that wasn't counted is never handed back.
-function noReplyLimit(agent: ReplyingAgent): boolean {
+function noReplyLimit(agent: ReplyQuotaAgent): boolean {
   return onPaidPlan(agent.user);
 }
 

@@ -156,6 +156,7 @@ model PhoneNumber {
   authValues    WhatsAppAuth[]
   conversations ChatConversation[]
   aiGroups      AiGroup[]
+  followUp      ChatFollowUp?
 
   @@unique([userId, phoneNumber])
   @@index([userId])
@@ -234,6 +235,7 @@ model ChatConversation {
   chatAgent   ChatAgent?    @relation(fields: [chatAgentId], references: [id], onDelete: SetNull)
   messages    ChatMessage[]
   orders      Order[]
+  followUpResults ChatFollowUpResult[]
 
   @@index([userId, lastMessageAt(sort: Desc)])
   @@index([chatAgentId])
@@ -261,6 +263,47 @@ model ChatMessage {
 
   @@unique([conversationId, seq])
   @@map("chat_messages")
+}
+
+model ChatFollowUp {
+  phoneNumberId String    @id @map("phone_number_id")
+  prompt        String
+  intervalHours Int       @map("interval_hours")
+  enabled       Boolean   @default(false)
+  revision      Int       @default(1)
+  nextRunAt     DateTime? @map("next_run_at") @db.Timestamptz
+  requestedAt   DateTime? @map("requested_at") @db.Timestamptz
+  leaseToken    String?   @map("lease_token")
+  leaseUntil    DateTime? @map("lease_until") @db.Timestamptz
+  lastRunAt     DateTime? @map("last_run_at") @db.Timestamptz
+  lastRunToken  String?   @map("last_run_token")
+  lastError     String?   @map("last_error")
+
+  phoneNumber PhoneNumber          @relation(fields: [phoneNumberId], references: [id], onDelete: Cascade)
+  results     ChatFollowUpResult[]
+
+  @@index([enabled, nextRunAt])
+  @@index([requestedAt])
+  @@map("chat_follow_ups")
+}
+
+model ChatFollowUpResult {
+  phoneNumberId    String   @map("phone_number_id")
+  conversationId   String   @map("conversation_id")
+  runToken         String   @map("run_token")
+  status           String
+  reason           String
+  message          String?
+  attemptedUserSeq Int?     @map("attempted_user_seq")
+  checkedAt        DateTime @default(now()) @map("checked_at") @db.Timestamptz
+
+  followUp     ChatFollowUp     @relation(fields: [phoneNumberId], references: [phoneNumberId], onDelete: Cascade)
+  conversation ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@id([phoneNumberId, conversationId])
+  @@index([phoneNumberId, runToken, conversationId], map: "chat_follow_up_results_run_idx")
+  @@index([conversationId])
+  @@map("chat_follow_up_results")
 }
 
 // Mirrors the Go server's knowledge_bases table (migrations 00031–00032). The
