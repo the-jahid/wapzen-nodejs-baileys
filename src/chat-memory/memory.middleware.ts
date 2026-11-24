@@ -29,6 +29,9 @@ export const MESSAGES_WITHOUT_MEMORY = 40;
 // The most one chat carries word for word, whatever happens to its summaries.
 export const MAX_MESSAGES = 400;
 
+// CHAT_SUMMARY=off: no new summaries, and only the latest messages are kept.
+const summariesOff = () => process.env.CHAT_SUMMARY === 'off';
+
 const memoryState = z.object({
   // The last saved message the thread has.
   syncedSeq: z.number().default(-1),
@@ -76,9 +79,10 @@ export const chatTranscript = createMiddleware({
         summarizedThrough,
       );
     }
-    if (memory.length > MAX_MESSAGES) {
+    const max = summariesOff() ? MESSAGES_WITHOUT_MEMORY : MAX_MESSAGES;
+    if (memory.length > max) {
       const summary = memory.filter((m) => m.id === SUMMARY_ID);
-      memory = [...summary, ...memory.slice(summary.length - MAX_MESSAGES)];
+      memory = [...summary, ...memory.slice(summary.length - max)];
     }
     return {
       messages: replaceAll([...memory, ...incoming]),
@@ -112,6 +116,7 @@ export function chatSummary(
     name: 'ChatSummary',
     stateSchema: memoryState,
     beforeModel: async (state, runtime) => {
+      if (summariesOff()) return;
       const update = await summarize(state, runtime);
       const [, summary, ...kept] = update?.messages ?? [];
       if (!summary || !isGoodSummary(summary.text, options.summaryPrefix)) {

@@ -278,6 +278,39 @@ describe('a long chat', () => {
     expect((await stateOf(restarted, thread)).summarizedThrough).toBe(9);
   });
 
+  describe('with CHAT_SUMMARY=off', () => {
+    const before = process.env.CHAT_SUMMARY;
+    beforeEach(() => {
+      process.env.CHAT_SUMMARY = 'off';
+    });
+    afterEach(() => {
+      if (before === undefined) delete process.env.CHAT_SUMMARY;
+      else process.env.CHAT_SUMMARY = before;
+    });
+
+    it('is never summed up, and keeps the last 40 messages', async () => {
+      const thread = newThread();
+      const app = boot();
+      await answer(app, thread, rowsOf(50));
+      const { given } = await answer(app, thread, rowsOf(60));
+      expect(app.summary.callCount).toBe(0);
+      expect(given).toHaveLength(41);
+      expect(given[0]).toBe('message 20');
+    });
+
+    it('still uses a summary it already has', async () => {
+      const thread = newThread();
+      delete process.env.CHAT_SUMMARY;
+      const app = boot({ summaries: ['Rahim wants 2 burgers.'] });
+      await answer(app, thread, rowsOf(50));
+      process.env.CHAT_SUMMARY = 'off';
+      const { given } = await answer(app, thread, rowsOf(60));
+      expect(app.summary.callCount).toBe(1);
+      expect(given[0]).toContain('Rahim wants 2 burgers.');
+      expect(given).toHaveLength(41);
+    });
+  });
+
   it('merges the earlier summary into the next one', async () => {
     const thread = newThread();
     const app = boot({ summaries: ['First notes.', 'Second notes.'] });
