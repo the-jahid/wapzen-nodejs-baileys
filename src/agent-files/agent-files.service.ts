@@ -102,7 +102,13 @@ export class AgentFilesService implements OnModuleDestroy {
     const client = new Client(connection(this.url!));
     await client.connect();
     try {
-      await client.query(CREATE_TABLE);
+      // CREATE_TABLE locks the whole table even when there's nothing to create,
+      // and every reply waits for it, so a backup still reading the table would
+      // stop the agents. It's only run when the table is missing.
+      const { rows } = await client.query<{ found: boolean }>(
+        "SELECT to_regclass('agent_files') IS NOT NULL AS found",
+      );
+      if (!rows[0].found) await client.query(CREATE_TABLE);
     } finally {
       await client.end().catch(() => undefined);
     }
