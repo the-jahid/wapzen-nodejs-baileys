@@ -27,9 +27,9 @@ const MAX_PEER_NAME = 120;
 
 // Saves one exchange, opening the thread the first time a contact writes to
 // a number. The thread is found by (phone_number_id, peer_jid), so it outlives
-// a change of agent; chat_agent_id moves to whoever replied. A message whose
-// WhatsApp id is already on the thread (a redelivery) is skipped. It is all
-// one statement, so a reply is never saved without its question, and it's
+// a change of agent; its chat_agent_id moves to whoever replied, while each
+// message keeps the agent it was sent to or by. A message whose WhatsApp id is
+// already on the thread (a redelivery) is skipped. It is all one statement, so a reply is never saved without its question, and it's
 // one round trip to the database instead of six (an interactive transaction
 // holds a pooled connection for every trip, while replies to other people
 // wait for one).
@@ -61,8 +61,10 @@ export async function recordChatTurn(prisma: PrismaService, turn: NewChatTurn) {
         SELECT 1 FROM chat_messages
         WHERE conversation_id = conv.id AND wa_message_id = ${waMessageId}::text)
     )
-    INSERT INTO chat_messages (conversation_id, seq, role, content, wa_message_id)
-    SELECT thread.id, thread.next_seq + t.ord, t.role, t.content, t.wa_message_id
+    INSERT INTO chat_messages
+      (conversation_id, seq, role, content, wa_message_id, chat_agent_id)
+    SELECT thread.id, thread.next_seq + t.ord, t.role, t.content, t.wa_message_id,
+      ${turn.chatAgentId || null}::text
     FROM thread,
       (VALUES (0, 'user', ${turn.userMessage}::text, ${waMessageId}::text),
               (1, 'assistant', ${reply}::text, NULL)) AS t(ord, role, content, wa_message_id)
@@ -70,11 +72,14 @@ export async function recordChatTurn(prisma: PrismaService, turn: NewChatTurn) {
     ORDER BY t.ord`;
 }
 
-// The last `limit` messages between a number and a contact, oldest first.
+// The last `limit` messages between a number and a contact while this agent
+// was on the number, oldest first. What an earlier agent said there, deleted or
+// not, isn't this agent's to remember.
 export async function latestChatMessages(
   db: Db,
   phoneNumberId: string,
   peerJid: string,
+  chatAgentId: string,
   limit: number,
 ) {
   const rows = await db.$queryRaw<
@@ -84,6 +89,7 @@ export async function latestChatMessages(
     FROM chat_messages m
     JOIN chat_conversations c ON c.id = m.conversation_id
     WHERE c.phone_number_id = ${phoneNumberId} AND c.peer_jid = ${peerJid}
+      AND m.chat_agent_id = ${chatAgentId}
     ORDER BY m.seq DESC
     LIMIT ${limit}`;
   return rows.reverse();
@@ -107,8 +113,8 @@ export async function ensureConversation(
   return row.id;
 }
 
-// Adds one message at the end of a thread. seq is worked out inside the
-// INSERT, so two writers can't both pick the same one quietly: the unique
+// Adds one message at the end of a thread, as part of what chatAgentId
+// remembers. seq is worked out inside the INSERT, so two writers can't both pick the same one quietly: the unique
 // (conversation_id, seq) index rejects the second. The trigger updates the
 // thread's message_count and last_message_*.
 export async function appendMessage(
@@ -117,13 +123,15 @@ export async function appendMessage(
   role: 'user' | 'assistant',
   content: string,
   waMessageId?: string,
+  chatAgentId?: string,
 ) {
   const [row] = await db.$queryRaw<
     { seq: number; role: string; content: string; createdAt: Date }[]
   >`
-    INSERT INTO chat_messages (conversation_id, seq, role, content, wa_message_id)
+    INSERT INTO chat_messages
+      (conversation_id, seq, role, content, wa_message_id, chat_agent_id)
     SELECT ${conversationId}, COALESCE(MAX(seq) + 1, 0), ${role}, ${content},
-      ${waMessageId || null}
+      ${waMessageId || null}, ${chatAgentId || null}
     FROM chat_messages
     WHERE conversation_id = ${conversationId}
     RETURNING seq, role, content, created_at AS "createdAt"`;

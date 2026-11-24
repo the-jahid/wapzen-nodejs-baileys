@@ -168,8 +168,8 @@ type ReadChat = IncomingChat & { images: string[] };
 // on, through a LangChain agent (reply-agent.ts). The model's context is kept
 // in memory: a summary plus the latest turns of each chat. A chat that isn't
 // there (after a restart, or forgotten as idle) starts again from its last
-// CHAT_REMEMBER_MESSAGES in chat_conversations, the readable record of every
-// thread.
+// CHAT_REMEMBER_MESSAGES with that agent in chat_conversations, the readable
+// record of every thread.
 @Injectable()
 export class ChatResponderService {
   private readonly logger = new Logger(ChatResponderService.name);
@@ -485,6 +485,7 @@ export class ChatResponderService {
       'assistant',
       sent.text,
       sent.messageId,
+      chatAgentId,
     ).catch((err: Error) => {
       if (!/unique/i.test(err.message)) {
         this.logger.error(
@@ -538,7 +539,7 @@ export class ChatResponderService {
         website,
         humanHelp,
       );
-      await this.loadHistory(key, chat);
+      await this.loadHistory(key, agent.id, chat);
       // The language the owner set, read from the prompt once and remembered:
       // it runs alongside everything up to the reply, so it adds no wait.
       const language = this.replyLanguage(apiKey, agent);
@@ -1154,15 +1155,22 @@ export class ChatResponderService {
       .join('\n\n');
   }
 
-  // Picks a chat back up from its saved messages when memory has none of it.
+  // Picks a chat back up from its saved messages when memory has none of it:
+  // only this agent's own, as in memory, so an agent newly put on a number
+  // starts every chat fresh.
   // A failed read is logged and the reply goes ahead without the history.
-  private async loadHistory(key: string, chat: IncomingChat) {
+  private async loadHistory(
+    key: string,
+    chatAgentId: string,
+    chat: IncomingChat,
+  ) {
     if (this.history.get(key)?.length) return;
     try {
       const turns = await latestChatMessages(
         this.prisma,
         chat.phoneNumberId,
         chat.peerJid,
+        chatAgentId,
         CHAT_REMEMBER_MESSAGES,
       );
       this.history.set(key, this.recent(key, turns));

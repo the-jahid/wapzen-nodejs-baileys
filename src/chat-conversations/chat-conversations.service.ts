@@ -130,6 +130,9 @@ export class ChatConversationsService {
   async send(userId: string, id: string, content: string) {
     const conversation = await this.prisma.chatConversation.findFirst({
       where: { id, userId },
+      include: {
+        phoneNumber: { select: { chatAgent: { select: { id: true } } } },
+      },
     });
     if (!conversation) throw notFound();
     // The number was removed: the history stays, but nothing can send.
@@ -160,9 +163,15 @@ export class ChatConversationsService {
       throw apiError(HttpStatus.BAD_GATEWAY, 'WhatsApp refused the message');
     }
 
-    if (conversation.chatAgentId) {
+    // Remembered by the agent on the number now. The thread's own agent is
+    // whoever answered last, which may be one that has since been replaced.
+    const chatAgentId =
+      conversation.phoneNumber?.chatAgent?.id ??
+      conversation.chatAgentId ??
+      undefined;
+    if (chatAgentId) {
       this.responder.rememberSent(
-        conversation.chatAgentId,
+        chatAgentId,
         conversation.phoneNumberId,
         conversation.peerJid,
         content,
@@ -175,7 +184,14 @@ export class ChatConversationsService {
     try {
       return {
         ...toMessageResource(
-          await appendMessage(this.prisma, id, 'assistant', content),
+          await appendMessage(
+            this.prisma,
+            id,
+            'assistant',
+            content,
+            undefined,
+            chatAgentId,
+          ),
         ),
         ai_reply_enabled,
       };

@@ -250,6 +250,10 @@ model ChatMessage {
   content        String
   // The inbound WhatsApp message id, so a redelivery isn't saved twice.
   waMessageId    String?  @map("wa_message_id")
+  // The chat agent on the number at the time: an agent only remembers its own
+  // messages. No foreign key, so a deleted agent's messages stay its own
+  // instead of becoming nobody's. NULL: from before this was recorded.
+  chatAgentId    String?  @map("chat_agent_id")
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   conversation ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
