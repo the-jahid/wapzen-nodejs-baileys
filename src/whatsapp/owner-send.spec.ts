@@ -178,7 +178,7 @@ describe('send_to_team in the toolbox', () => {
     });
     expect(send).toHaveBeenCalledWith(to, PATIENT, '');
     expect(result).toContain('has been sent');
-    expect(box.passedOnRecords).toEqual([
+    expect(box.doneRecords).toEqual([
       `${PASSED_ON_MARK} Name: রহিমা বেগম; Age: ৪৫`,
     ]);
     expect(box.withoutFileMarks(`${PASSED_ON_MARK} Name: X\nThank you!`)).toBe(
@@ -238,7 +238,7 @@ describe('send_to_team in the toolbox', () => {
         details: PATIENT,
       }),
     ).toContain('could not be sent');
-    expect(box.passedOnRecords).toEqual([]);
+    expect(box.doneRecords).toEqual([]);
   });
 });
 

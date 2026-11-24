@@ -3,7 +3,10 @@ import type { Tool } from '../generated/prisma/client';
 import {
   ORDER_FUNCTION,
   ORDER_FUNCTION_DESCRIPTION,
+  ORDER_MARK,
+  ORDER_RECORD_RULE,
   orderParameters,
+  orderRecord,
   type OrderField,
 } from '../orders/order-tool';
 import type { OrderResult } from '../orders/orders.service';
@@ -108,6 +111,20 @@ export type ChatOrders = {
   ) => Promise<OrderResult>;
 };
 
+function withoutRecordLines(text: string) {
+  const marks = [PASSED_ON_MARK, ORDER_MARK];
+  if (!marks.some((mark) => text.includes(mark))) return text;
+  return marks
+    .reduce(
+      (left, mark) => left.replaceAll(mark, ''),
+      text
+        .split('\n')
+        .filter((line) => !marks.some((mark) => line.trim().startsWith(mark)))
+        .join('\n'),
+    )
+    .trim();
+}
+
 export class ChatToolbox {
   private readonly byName = new Map<string, ResolvedTool>();
   // The order placed in this reply, once there is one.
@@ -118,8 +135,9 @@ export class ChatToolbox {
   private orderMissing = '';
   // The files sent in this reply, by name, once each however often it's asked.
   private readonly filesSent = new Set<string>();
-  // What went to the owner's numbers in this reply, as the record keeps it.
-  private readonly passedOn: string[] = [];
+  // What went to the owner's numbers and which order was placed in this reply,
+  // as the record keeps it.
+  private readonly done: string[] = [];
 
   private constructor(
     private readonly label: string,
@@ -218,9 +236,10 @@ export class ChatToolbox {
     return lines.join('\n');
   }
 
-  // What went to the owner's numbers in this reply, one line each.
-  get passedOnRecords() {
-    return [...this.passedOn];
+  // What went to the owner's numbers and which order was placed in this reply,
+  // one line each.
+  get doneRecords() {
+    return [...this.done];
   }
 
   // The files sent in this reply, by name.
@@ -246,16 +265,9 @@ export class ChatToolbox {
   // The model sometimes copies the mark it sees in its history, in live tests as
   // "📎 Here's our location" and "Here's the menu! 📎 menu.pdf". That is for the
   // record only, so it never reaches the person, and neither does a copied
-  // "passed to the team" line.
+  // "passed to the team" or "order on record" line.
   withoutFileMarks(raw: string) {
-    const text = raw.includes(PASSED_ON_MARK)
-      ? raw
-          .split('\n')
-          .filter((line) => !line.trim().startsWith(PASSED_ON_MARK))
-          .join('\n')
-          .replaceAll(PASSED_ON_MARK, '')
-          .trim()
-      : raw;
+    const text = withoutRecordLines(raw);
     if (!text.includes(FILE_SENT_MARK)) return text;
     const names = this.sentFiles.map(escapeRegExp).join('|');
     return (
@@ -274,6 +286,11 @@ export class ChatToolbox {
   // Whether this reply can place an order.
   get takesOrders() {
     return this.byName.get(ORDER_FUNCTION)?.type === 'order';
+  }
+
+  // How to read the order lines in the history, for the prompt.
+  get orderRecordPrompt() {
+    return this.takesOrders ? ORDER_RECORD_RULE : '';
   }
 
   get phoneKnown() {
@@ -433,6 +450,14 @@ export class ChatToolbox {
     }
     this.placed ??= orders.place(args, this.orderFields).then((result) => {
       if (!result.success) this.placed = undefined;
+      else {
+        this.done.push(
+          orderRecord(result.order_number, {
+            updated: result.updated,
+            contents: argumentToString(args.description),
+          }),
+        );
+      }
       return result;
     });
     return this.placed;
@@ -473,7 +498,7 @@ export class ChatToolbox {
       .then((outcome) => {
         logger.log(`${this.label} called a human (${outcome})`);
         if (outcome === 'sent') {
-          this.passedOn.push(passedOnRecord(details, reason));
+          this.done.push(passedOnRecord(details, reason));
         }
         return outcome === 'recent'
           ? 'The team was already told about this chat a short while ago. Tell the person someone will get back to them here soon; do not call again, and do not say anything new was passed on.'
@@ -516,7 +541,7 @@ export class ChatToolbox {
       if (outcome === 'already') {
         return 'The team already has exactly this from this chat, so it was not sent again. Tell the person it has been passed on.';
       }
-      this.passedOn.push(passedOnRecord(details, note));
+      this.done.push(passedOnRecord(details, note));
       return "It has been sent to the team on WhatsApp. Tell the person briefly that it was passed on, in your own words, without the team's number.";
     } catch (err) {
       logger.warn(

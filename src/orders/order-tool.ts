@@ -7,6 +7,40 @@ export const ORDER_FUNCTION = 'create_order';
 export const ORDER_FUNCTION_DESCRIPTION =
   'Places an order for the customer in this conversation. Call it only after the customer has confirmed the order summary.';
 
+// Opens the line that records, in the saved conversation and the agent's
+// history, an order that was really placed. Without it the next reply took the
+// order back ("I need to correct my last message: the order is not placed"),
+// since the history only has the agent's own words for it. The customer never
+// sees this line.
+export const ORDER_MARK = '🧾 Order on record:';
+
+const MAX_RECORD_CHARS = 300;
+
+// contents is what the order now holds, as create_order was given it: without
+// it the agent still took back one change in five, sure the order on record was
+// the earlier one.
+export function orderRecord(
+  orderNumber: number,
+  { updated = false, contents = '' } = {},
+) {
+  const now = contents.replace(/\s+/g, ' ').trim().slice(0, MAX_RECORD_CHARS);
+  return (
+    `${ORDER_MARK} #${orderNumber}, ${updated ? 'change confirmed and saved' : 'confirmed and placed'}` +
+    (now ? `, now: ${now}` : '')
+  );
+}
+
+// The text without its record lines, for a reader that needs only what was
+// said to the customer.
+export const withoutOrderRecords = (text: string) =>
+  text
+    .split('\n')
+    .filter((line) => !line.startsWith(ORDER_MARK))
+    .join('\n');
+
+// For the prompt of an agent that takes orders.
+export const ORDER_RECORD_RULE = `A line starting with "${ORDER_MARK}" in your earlier messages records an order that ${ORDER_FUNCTION} really saved, under that number. The latest line is how the order stands now: what it lists is confirmed and saved, changes included. Never say it wasn't placed or changed, never take it back or apologise for it, and don't ask to confirm it again. Only something the customer asks for after that line still needs their yes and ${ORDER_FUNCTION}. Never write such a line yourself.`;
+
 // One detail create_order collects. A key from DEFAULT_ORDER_FIELDS fills that
 // column of the order; any other is a field the owner added.
 export type OrderField = { key: string; label: string; required: boolean };

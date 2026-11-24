@@ -34,6 +34,7 @@ import { IndexerService } from '../knowledge-bases/indexer.service';
 import {
   ORDER_FUNCTION,
   requiredDetails,
+  withoutOrderRecords,
   type OrderField,
 } from '../orders/order-tool';
 import { orderNotice } from '../orders/order-notice';
@@ -579,6 +580,7 @@ export class ChatResponderService {
       const prompt = [
         agent.systemPrompt.trim(),
         toolbox?.takesOrders ? agent.orderInstructions.trim() : '',
+        toolbox?.orderRecordPrompt ?? '',
         toolbox?.filesPrompt ?? '',
         toolbox?.websitePrompt ?? '',
         toolbox?.humanHelpPrompt ?? '',
@@ -655,12 +657,13 @@ export class ChatResponderService {
       // The trial's last reply went out: the agent stops now, so the
       // dashboard says so before the next message comes.
       if (trialCount === FREE_TRIAL_REPLIES) await this.endTrial(agent);
-      // The record says which files went out and what was passed to the team,
-      // or the agent would forget and send them again. The customer already has
-      // the files, and gets none of these lines.
+      // The record says which files went out, what was passed to the team and
+      // which order was placed, or the agent would forget, and send or place
+      // them again or take them back. The customer already has the files, and
+      // gets none of these lines.
       const record = [
         ...sentFiles.map((name) => `${FILE_SENT_MARK} ${name}`),
-        ...(toolbox?.passedOnRecords ?? []),
+        ...(toolbox?.doneRecords ?? []),
         reply,
       ]
         .filter(Boolean)
@@ -1188,7 +1191,12 @@ export class ChatResponderService {
     this.confirmationCheck ??= createConfirmationCheck(apiKey);
     try {
       return await this.confirmationCheck(
-        turns,
+        // The check reads a line with an order number as nothing waiting for a
+        // yes, so the record lines stay out of it.
+        turns.map((turn) => ({
+          ...turn,
+          text: withoutOrderRecords(turn.text),
+        })),
         text,
         agent.orderInstructions,
         requiredDetails(fields),
