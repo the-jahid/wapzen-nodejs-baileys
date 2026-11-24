@@ -75,6 +75,9 @@ export class PrismaService
   extends PrismaClient
   implements OnModuleInit, OnModuleDestroy
 {
+  // The same connections, for what Prisma doesn't do (chat memory).
+  readonly pool: Pool;
+
   constructor(config: ConfigService) {
     const pool = new RetryingPool({
       connectionString: config.getOrThrow<string>('DATABASE_URL'),
@@ -84,6 +87,7 @@ export class PrismaService
       keepAlive: true,
     });
     super({ adapter: new PrismaPg(pool, { disposeExternalPool: true }) });
+    this.pool = pool;
   }
 
   async onModuleInit() {

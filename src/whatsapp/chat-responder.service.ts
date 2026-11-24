@@ -1,12 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import {
-  AIMessage,
-  HumanMessage,
-  type BaseMessage,
-} from '@langchain/core/messages';
+import { HumanMessage, type BaseMessage } from '@langchain/core/messages';
 import { activity } from '../activity/activity';
 import { AgentFilesService } from '../agent-files/agent-files.service';
 import type { OutgoingFile } from '../agent-files/agent-files.types';
@@ -17,10 +13,18 @@ import {
   HOURLY_REPLY_LIMIT,
   onPaidPlan,
 } from '../chat-agents/chat-agents.types';
+import { ChatMemoryService } from '../chat-memory/chat-memory.service';
+import {
+  gapNote,
+  rowMessages,
+  threadIdFor,
+  type Transcript,
+} from '../chat-memory/transcript';
 import {
   appendMessage,
+  chatTranscript,
   ensureConversation,
-  latestChatMessages,
+  messagesBetween,
   recordChatTurn,
   resolvePeerPhones,
 } from '../chat-conversations/chat-conversations.store';
@@ -69,10 +73,9 @@ import {
 } from '../tools/chat-toolbox';
 import {
   CHAT_REMEMBER_MESSAGES,
-  CHAT_SUMMARY_AT,
+  CHAT_TRANSCRIPT_MESSAGES,
   createConfirmationCheck,
   createReplyAgent,
-  isChatSummary,
   REPLY_RULES,
   type ReplyContext,
 } from './reply-agent';
@@ -91,20 +94,12 @@ import { toWhatsAppFormat } from './whatsapp-format';
 const BURST_QUIET_MS = 2_000;
 const MAX_BURST_WAIT_MS = 8_000;
 
-// The most a chat keeps word for word. The summary middleware sums a chat up
-// before it gets here, so this only stops a chat whose summaries keep failing
-// from growing. Keep it even, or trimming to the person's message loses one
-// more.
-const MAX_HISTORY = CHAT_SUMMARY_AT;
-// Chats kept in memory across every number; past this the one idle longest
-// is forgotten, so memory stays flat however many people write in.
-const MAX_CONVERSATIONS = 5_000;
+// The most saved messages read at once for a chat whose memory is far behind.
+const MAX_OLDER_MESSAGES = 400;
 // Added to the owner's prompt in a group only: there, several people share one
 // chat, and the agent only hears from them when they tag it.
 const GROUP_CHAT_NOTE =
   "This chat is a WhatsApp group. Each message starts with the name of the person who wrote it, and you only see the messages that tag you or reply to you. Answer the person who wrote to you, by name when it's clear who you're talking to.";
-
-type Turn = { role: 'user' | 'assistant'; text: string };
 
 // One chat's messages waiting to be answered together. Only one reply per chat
 // runs at a time; what arrives meanwhile waits for the next.
@@ -172,17 +167,13 @@ export type PersonSent = {
 type ReadChat = IncomingChat & { images: string[] };
 
 // Answers a WhatsApp message as the chat agent live on the number it arrived
-// on, through a LangChain agent (reply-agent.ts). The model's context is kept
-// in memory: a summary plus the latest turns of each chat. A chat that isn't
-// there (after a restart, or forgotten as idle) starts again from its last
-// CHAT_REMEMBER_MESSAGES with that agent in chat_conversations, the readable
-// record of every thread.
+// on, through a LangChain agent (reply-agent.ts). What was said is read from
+// chat_messages, the readable record of every thread; the agent's own short-term
+// memory (chat-memory) keeps each chat's latest messages and a summary of the
+// older ones, so it survives a restart.
 @Injectable()
 export class ChatResponderService {
   private readonly logger = new Logger(ChatResponderService.name);
-  private readonly history = new Map<string, Turn[]>();
-  // What the summary middleware made of each long chat's older messages.
-  private readonly summaries = new Map<string, BaseMessage>();
   private readonly bursts = new Map<string, Burst>();
   // Catches an agent caught replying to another bot (loop-guard.ts).
   private readonly loops = new LoopGuard();
@@ -193,7 +184,11 @@ export class ChatResponderService {
   // Chats whose order the owner's number was alerted to lately.
   private readonly orderAlerts = new HumanAlertLog();
   private ownerSendLookup?: ReturnType<typeof createOwnerSendLookup>;
+  // The agent with its memory, and the one that answers without any. The first
+  // is made again if the store changes: it is ready a moment after the start.
   private agent?: ReturnType<typeof createReplyAgent>;
+  private agentSaver?: ChatMemoryService['saver'];
+  private memorylessAgent?: ReturnType<typeof createReplyAgent>;
   private confirmationCheck?: ReturnType<typeof createConfirmationCheck>;
   private languageGuard?: ReturnType<typeof createLanguageGuard>;
 
@@ -203,12 +198,8 @@ export class ChatResponderService {
     private readonly indexer: IndexerService,
     private readonly orders: OrdersService,
     private readonly files: AgentFilesService,
+    @Optional() private readonly memory?: ChatMemoryService,
   ) {}
-
-  // For the memory line in the log (WhatsAppService.reportMemory).
-  chatsInMemory() {
-    return this.history.size;
-  }
 
   // Queues a message to be answered with any others the person sends in the
   // same burst. A message lost here (a restart inside the wait) goes unanswered,
@@ -341,14 +332,6 @@ export class ChatResponderService {
     } else if (!aiOff) {
       reply = await this.replyAs(agent, chat);
       if (reply) this.loops.replied(loopKey, reply);
-    } else {
-      // The agent keeps hearing the chat, so when it's switched back on it
-      // knows what was said meanwhile. A chat not in memory reloads from the
-      // saved messages anyway.
-      const key = `${agent.id}|${phoneNumberId}|${peerJid}`;
-      if (this.history.get(key)?.length) {
-        this.remember(key, { role: 'user', text: chat.text });
-      }
     }
     // Saved for the dashboard whether or not a reply went out: the messages
     // still arrived. Losing the copy mustn't disturb the reply path.
@@ -440,20 +423,6 @@ export class ChatResponderService {
     }
   }
 
-  // A message a person sent from the dashboard joins the agent's history, so
-  // its next reply knows what was already said.
-  rememberSent(
-    chatAgentId: string,
-    phoneNumberId: string,
-    peerJid: string,
-    text: string,
-  ) {
-    this.remember(`${chatAgentId}|${phoneNumberId}|${peerJid}`, {
-      role: 'assistant',
-      text,
-    });
-  }
-
   // A person wrote to the customer from the number's own WhatsApp: the
   // message joins the thread, as one sent from the dashboard would, so the
   // agent's next reply knows what was said. The AI stays as it is: only the
@@ -505,12 +474,6 @@ export class ChatResponderService {
         );
       }
     });
-    this.rememberSent(
-      chatAgentId,
-      sent.phoneNumberId,
-      thread.peerJid,
-      sent.text,
-    );
   }
 
   // Answers as the agent and returns what was sent, or '' when nothing was.
@@ -531,17 +494,18 @@ export class ChatResponderService {
       return '';
     }
 
-    const key = `${agent.id}|${chat.phoneNumberId}|${chat.peerJid}`;
     let sent = false;
     try {
       await chat.setTyping(true).catch(() => undefined);
 
-      const [orders, files, website, ownerSends] = await Promise.all([
-        this.ordersFor(agent, chat),
-        this.filesFor(agent, chat),
-        websiteFor(agent),
-        this.ownerSendsFor(apiKey, agent, chat),
-      ]);
+      const [orders, files, website, ownerSends, transcript] =
+        await Promise.all([
+          this.ordersFor(agent, chat),
+          this.filesFor(agent, chat),
+          websiteFor(agent),
+          this.ownerSendsFor(apiKey, agent, chat),
+          this.transcriptFor(agent, chat),
+        ]);
       const humanHelp = this.humanHelpFor(agent, chat);
       const toolbox = ChatToolbox.for(
         agent.tools.map((t) => t.tool),
@@ -553,18 +517,17 @@ export class ChatResponderService {
         humanHelp,
         ownerSends,
       );
-      await this.loadHistory(key, agent.id, chat);
       // The language the owner set, read from the prompt once and remembered:
       // it runs alongside everything up to the reply, so it adds no wait.
       const language = this.replyLanguage(apiKey, agent);
       // Both ask a different service before the reply can start, so they run
       // together.
       const [knowledge, check] = await Promise.all([
-        this.knowledgeFor(agent, key, chat.text),
+        this.knowledgeFor(agent, transcript, chat.text),
         !!toolbox?.takesOrders &&
           this.orderConfirmed(
             apiKey,
-            key,
+            transcript,
             chat.text,
             agent,
             toolbox.orderFields,
@@ -590,13 +553,14 @@ export class ChatResponderService {
       ]
         .filter(Boolean)
         .join('\n\n');
+      const now = new Date();
       const turnNotes = [
-        dateContext(new Date(), zoneForPhone(agent.phoneNumber?.phoneNumber)),
+        dateContext(now, zoneForPhone(agent.phoneNumber?.phoneNumber)),
+        gapNote(transcript.rows.at(-1)?.at, now),
         knowledge,
       ]
         .filter(Boolean)
         .join('\n\n');
-      const summary = this.summaries.get(key);
       // Photos go to the model only with the message they came in; history
       // keeps the 📷 line, not the image.
       const incoming = new HumanMessage({
@@ -611,26 +575,24 @@ export class ChatResponderService {
             ]
           : chat.text,
       });
-      const messages: BaseMessage[] = [
-        ...(summary ? [summary] : []),
-        ...this.recent(key).map((turn) =>
-          turn.role === 'user'
-            ? new HumanMessage(turn.text)
-            : new AIMessage(turn.text),
-        ),
-        incoming,
-      ];
+      const messages = [...rowMessages(transcript.rows), incoming];
       if (check) {
         if (check.confirmed) toolbox!.confirmOrder();
         toolbox!.noteMissing(check.missing);
       }
-      const generated = await this.generate(key, apiKey, messages, incoming, {
-        prompt,
-        turnNotes,
-        incomingId: incoming.id,
-        toolbox,
-        requiredTool: check && check.confirmed ? ORDER_FUNCTION : undefined,
-      });
+      const generated = await this.generate(
+        apiKey,
+        agent,
+        transcript,
+        messages,
+        {
+          prompt,
+          turnNotes,
+          incomingId: incoming.id,
+          toolbox,
+          requiredTool: check && check.confirmed ? ORDER_FUNCTION : undefined,
+        },
+      );
       // An order must never be placed in silence.
       const orderNumber = await toolbox?.placedOrderNumber();
       const reply = toWhatsAppFormat(
@@ -668,8 +630,6 @@ export class ChatResponderService {
       ]
         .filter(Boolean)
         .join('\n');
-      this.remember(key, { role: 'user', text: chat.text });
-      this.remember(key, { role: 'assistant', text: record });
       this.logger.log(`chat agent ${agent.id} replied to ${chat.peerJid}`);
       activity(
         `AI replied: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
@@ -1181,12 +1141,11 @@ export class ChatResponderService {
   // on without it, and the customer's next message gets another chance.
   private async orderConfirmed(
     apiKey: string,
-    key: string,
+    { rows: turns }: Transcript,
     text: string,
     agent: ReplyingAgent,
     fields: OrderField[],
   ) {
-    const turns = this.recent(key);
     if (!turns.some((turn) => turn.role === 'assistant')) return undefined;
     this.confirmationCheck ??= createConfirmationCheck(apiKey);
     try {
@@ -1210,7 +1169,11 @@ export class ChatResponderService {
   // The passages for this message from the agent's knowledge bases, as prompt
   // text. A failed lookup is logged and the agent answers from its prompt
   // alone: a thinner reply beats none.
-  private async knowledgeFor(agent: ReplyingAgent, key: string, text: string) {
+  private async knowledgeFor(
+    agent: ReplyingAgent,
+    { rows }: Transcript,
+    text: string,
+  ) {
     const knowledgeBases = agent.knowledgeBases
       .map(({ knowledgeBase }) => knowledgeBase)
       .filter((kb) => kb.pineconeNamespace);
@@ -1222,7 +1185,7 @@ export class ChatResponderService {
       return '';
     }
     try {
-      const query = chatKnowledgeQuery(this.recent(key), text);
+      const query = chatKnowledgeQuery(rows, text);
       return chatKnowledgePrompt(
         await this.indexer.search(knowledgeBases, query, CHAT_KNOWLEDGE_TOP_K),
       );
@@ -1234,87 +1197,79 @@ export class ChatResponderService {
     }
   }
 
-  // Asks the agent for the reply. The text of every model call is kept, so
-  // anything said before a tool call still reaches the person. A summary
-  // replaces the messages before it, so the reply is found by what follows the
-  // incoming message, not by position.
+  // Asks the agent for the reply, on the chat's own memory thread when there is
+  // a store to keep it in. A contact's first message has no thread yet, and
+  // nothing to remember either.
   private async generate(
-    key: string,
     apiKey: string,
+    agent: ReplyingAgent,
+    { conversationId, rows }: Transcript,
     messages: BaseMessage[],
-    incoming: HumanMessage,
     context: ReplyContext,
   ) {
-    this.agent ??= createReplyAgent(apiKey);
-    const result = await this.agent.invoke({ messages }, { context });
-    const at = result.messages.findIndex((m) => m.id === incoming.id);
-    const [first] = result.messages;
-    if (
-      at > 0 &&
-      isChatSummary(first) &&
-      first.text !== this.summaries.get(key)?.text
-    ) {
-      // A new summary: only the turns the middleware kept, the ones between it
-      // and the incoming message, stay word for word.
-      const kept = at - 1;
-      const turns = this.history.get(key) ?? [];
-      this.summaries.set(key, first);
-      this.history.set(key, kept ? turns.slice(-kept) : []);
+    const saver = this.memory?.saver;
+    if (!saver || !conversationId) {
+      this.memorylessAgent ??= createReplyAgent(apiKey);
+      const result = await this.memorylessAgent.invoke(
+        { messages },
+        { context },
+      );
+      return result.reply;
     }
-    return result.messages
-      .slice(at + 1 || messages.length)
-      .filter((message) => AIMessage.isInstance(message))
-      .map((message) => message.text.trim())
-      .filter(Boolean)
-      .join('\n\n');
+    if (!this.agent || this.agentSaver !== saver) {
+      this.agent = createReplyAgent(apiKey, saver);
+      this.agentSaver = saver;
+    }
+    const result = await this.agent.invoke(
+      { messages },
+      {
+        configurable: { thread_id: threadIdFor(conversationId, agent.id) },
+        // Saved once, when the reply is written: a run is never resumed.
+        durability: 'exit',
+        context: {
+          ...context,
+          // Only a saved memory can be far behind and worth catching up.
+          older:
+            !this.memory?.saved || rows.length < CHAT_TRANSCRIPT_MESSAGES
+              ? undefined
+              : {
+                  beforeSeq: rows[0].seq,
+                  load: (afterSeq) =>
+                    messagesBetween(
+                      this.prisma,
+                      conversationId,
+                      agent.id,
+                      afterSeq,
+                      rows[0].seq,
+                      MAX_OLDER_MESSAGES,
+                    ),
+                },
+        },
+      },
+    );
+    return result.reply;
   }
 
-  // Picks a chat back up from its saved messages when memory has none of it:
-  // only this agent's own, as in memory, so an agent newly put on a number
-  // starts every chat fresh.
-  // A failed read is logged and the reply goes ahead without the history.
-  private async loadHistory(
-    key: string,
-    chatAgentId: string,
+  // The chat so far, as saved: only this agent's own, so an agent newly put on a
+  // number starts every chat fresh. A failed read is logged and the reply goes
+  // ahead without it.
+  private async transcriptFor(
+    agent: ReplyingAgent,
     chat: IncomingChat,
-  ) {
-    if (this.history.get(key)?.length) return;
+  ): Promise<Transcript> {
     try {
-      const turns = await latestChatMessages(
+      return await chatTranscript(
         this.prisma,
         chat.phoneNumberId,
         chat.peerJid,
-        chatAgentId,
-        CHAT_REMEMBER_MESSAGES,
+        agent.id,
+        this.memory?.saved ? CHAT_TRANSCRIPT_MESSAGES : CHAT_REMEMBER_MESSAGES,
       );
-      this.history.set(key, this.recent(key, turns));
     } catch (err) {
       this.logger.error(
         `loading the chat with ${chat.peerJid} failed: ${(err as Error).message}`,
       );
-    }
-  }
-
-  // The chat's latest turns. The model's context has to open with the
-  // person's message, not a reply.
-  private recent(key: string, turns = this.history.get(key) ?? []) {
-    const recent = turns.slice(-MAX_HISTORY);
-    while (recent[0]?.role === 'assistant') recent.shift();
-    // The summary goes when the chat does.
-    if (!recent.length) this.summaries.delete(key);
-    return recent;
-  }
-
-  private remember(key: string, turn: Turn) {
-    const turns = [...(this.history.get(key) ?? []), turn];
-    // Re-inserting moves the chat to the end, so the Map's first key is
-    // always the one idle longest.
-    this.history.delete(key);
-    this.history.set(key, this.recent(key, turns));
-    if (this.history.size > MAX_CONVERSATIONS) {
-      const [oldest] = this.history.keys();
-      this.history.delete(oldest);
-      this.summaries.delete(oldest);
+      return { rows: [] };
     }
   }
 }

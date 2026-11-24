@@ -1,4 +1,5 @@
 import type { ChatConversation } from '../generated/prisma/client';
+import type { Transcript, TranscriptRow } from '../chat-memory/transcript';
 import type { PrismaService } from '../prisma/prisma.service';
 
 // Writes to chat_conversations / chat_messages that both the reply path
@@ -72,25 +73,52 @@ export async function recordChatTurn(prisma: PrismaService, turn: NewChatTurn) {
     ORDER BY t.ord`;
 }
 
-// The last `limit` messages between a number and a contact while this agent
-// was on the number, oldest first. What an earlier agent said there, deleted or
-// not, isn't this agent's to remember.
-export async function latestChatMessages(
+// The thread between a number and a contact, and the last `limit` messages
+// saved while this agent was on the number, oldest first. What an earlier agent
+// said there, deleted or not, isn't this agent's to remember.
+export async function chatTranscript(
   db: Db,
   phoneNumberId: string,
   peerJid: string,
   chatAgentId: string,
   limit: number,
-) {
+): Promise<Transcript> {
   const rows = await db.$queryRaw<
-    { role: 'user' | 'assistant'; text: string }[]
+    ({ id: string } & { [K in keyof TranscriptRow]: TranscriptRow[K] | null })[]
   >`
-    SELECT m.role, m.content AS text
-    FROM chat_messages m
-    JOIN chat_conversations c ON c.id = m.conversation_id
+    SELECT c.id, m.seq, m.role, m.content AS text, m.created_at AS at
+    FROM chat_conversations c
+    LEFT JOIN LATERAL (
+      SELECT seq, role, content, created_at FROM chat_messages
+      WHERE conversation_id = c.id AND chat_agent_id = ${chatAgentId}
+      ORDER BY seq DESC
+      LIMIT ${limit}
+    ) m ON true
     WHERE c.phone_number_id = ${phoneNumberId} AND c.peer_jid = ${peerJid}
-      AND m.chat_agent_id = ${chatAgentId}
-    ORDER BY m.seq DESC
+    ORDER BY m.seq`;
+  return {
+    conversationId: rows[0]?.id,
+    rows: rows.filter((row) => row.seq !== null) as TranscriptRow[],
+  };
+}
+
+// The agent's messages on a thread after one seq and before another, oldest
+// first: the latest `limit` of them.
+export async function messagesBetween(
+  db: Db,
+  conversationId: string,
+  chatAgentId: string,
+  afterSeq: number,
+  beforeSeq: number,
+  limit: number,
+): Promise<TranscriptRow[]> {
+  const rows = await db.$queryRaw<TranscriptRow[]>`
+    SELECT seq, role, content AS text, created_at AS at
+    FROM chat_messages
+    WHERE conversation_id = ${conversationId}
+      AND chat_agent_id = ${chatAgentId}
+      AND seq > ${afterSeq} AND seq < ${beforeSeq}
+    ORDER BY seq DESC
     LIMIT ${limit}`;
   return rows.reverse();
 }

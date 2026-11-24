@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { userSignedUp } from '../activity/activity';
 import { AgentFilesService } from '../agent-files/agent-files.service';
 import { createStarterAgent } from '../chat-agents/starter-agent';
+import { ChatMemoryService } from '../chat-memory/chat-memory.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 // The parts of a Clerk user event this server reads.
@@ -22,6 +23,7 @@ export class WebhooksService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly files: AgentFilesService,
+    @Optional() private readonly memory?: ChatMemoryService,
   ) {}
 
   // Mirrors the Go server's WebhookHandler.handleClerkEvent: created/updated
@@ -65,11 +67,15 @@ export class WebhooksService {
         if (!user?.id) return 'webhook user id is required';
         const gone = await this.prisma.user.findUnique({
           where: { oauthId: user.id },
-          select: { id: true },
+          select: { id: true, chatConversations: { select: { id: true } } },
         });
         await this.prisma.user.deleteMany({ where: { oauthId: user.id } });
-        // agent_files has no foreign keys, so the cascade doesn't reach them.
-        if (gone) await this.files.removeForUser(gone.id);
+        // agent_files and chat memory have no foreign keys, so the cascade
+        // doesn't reach them.
+        if (gone) {
+          await this.files.removeForUser(gone.id);
+          await this.memory?.forget(gone.chatConversations.map((c) => c.id));
+        }
         return null;
       }
       default:

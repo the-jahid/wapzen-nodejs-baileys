@@ -2,7 +2,6 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
-import { AIMessage } from '@langchain/core/messages';
 import type { BaseMessage } from '@langchain/core/messages';
 import type { ConfigService } from '@nestjs/config';
 import { PrismaPg } from '@prisma/adapter-pg';
@@ -30,14 +29,11 @@ jest.mock('./reply-language', () => ({
 }));
 jest.mock('./reply-agent', () => ({
   CHAT_REMEMBER_MESSAGES: 40,
-  CHAT_SUMMARY_AT: 50,
-  isChatSummary: () => false,
+  CHAT_TRANSCRIPT_MESSAGES: 60,
   createReplyAgent: () => ({
     invoke: ({ messages }: { messages: BaseMessage[] }) => {
       modelCalls.push(messages);
-      return Promise.resolve({
-        messages: [...messages, new AIMessage('The AI reply')],
-      });
+      return Promise.resolve({ reply: 'The AI reply' });
     },
   }),
 }));
@@ -216,7 +212,6 @@ describe('what an agent remembers', () => {
     const dashboard = new ChatConversationsService(
       prisma as unknown as PrismaService,
       { sendText: () => Promise.resolve() } as unknown as WhatsAppService,
-      responder,
     );
     const thread = await threadOn(phoneId);
     await dashboard.send(userId, thread.id, 'from the dashboard');

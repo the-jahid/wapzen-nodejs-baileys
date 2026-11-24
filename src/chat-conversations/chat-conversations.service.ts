@@ -1,8 +1,8 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger, Optional } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { apiError } from '../chat-agents/chat-agents.types';
+import { ChatMemoryService } from '../chat-memory/chat-memory.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { ChatResponderService } from '../whatsapp/chat-responder.service';
 import { isGroupJid } from '../whatsapp/group-chat';
 import {
   NumberNotConnectedError,
@@ -27,7 +27,7 @@ export class ChatConversationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly whatsapp: WhatsAppService,
-    private readonly responder: ChatResponderService,
+    @Optional() private readonly memory?: ChatMemoryService,
   ) {}
 
   // One page of the user's threads, most recently active first. A thread
@@ -120,6 +120,7 @@ export class ChatConversationsService {
       where: { id, userId },
     });
     if (count === 0) throw notFound();
+    await this.memory?.forget([id]);
   }
 
   // A person replying from the dashboard. The message goes out on the
@@ -163,20 +164,12 @@ export class ChatConversationsService {
       throw apiError(HttpStatus.BAD_GATEWAY, 'WhatsApp refused the message');
     }
 
-    // Remembered by the agent on the number now. The thread's own agent is
+    // Saved as the agent's on the number now, which then remembers it. The thread's own agent is
     // whoever answered last, which may be one that has since been replaced.
     const chatAgentId =
       conversation.phoneNumber?.chatAgent?.id ??
       conversation.chatAgentId ??
       undefined;
-    if (chatAgentId) {
-      this.responder.rememberSent(
-        chatAgentId,
-        conversation.phoneNumberId,
-        conversation.peerJid,
-        content,
-      );
-    }
 
     // It was sent, which is what matters to the contact; failing to save the
     // copy is logged, not reported as a failed send.

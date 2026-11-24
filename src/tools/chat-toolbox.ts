@@ -365,6 +365,13 @@ export class ChatToolbox {
     return definitions;
   }
 
+  // The tools the owner attached, which a reply can do without. The built-in
+  // ones (orders, files, the website, people) are left out: the prompt tells the
+  // model to use them, so they are always offered.
+  ownerTools() {
+    return [...this.byName.values()].filter((tool) => tool.type !== 'order');
+  }
+
   // Appended to the agent's prompt. A tool the prompt never mentions is
   // rarely called, and the rules that matter in a chat live nowhere else.
   instructions(): string {

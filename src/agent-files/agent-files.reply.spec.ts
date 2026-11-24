@@ -1,4 +1,4 @@
-import { AIMessage, type BaseMessage } from '@langchain/core/messages';
+import type { BaseMessage } from '@langchain/core/messages';
 import type { ConfigService } from '@nestjs/config';
 import type { IndexerService } from '../knowledge-bases/indexer.service';
 import type { OrdersService } from '../orders/orders.service';
@@ -33,9 +33,8 @@ jest.mock('../whatsapp/reply-language', () => ({
 }));
 jest.mock('../whatsapp/reply-agent', () => ({
   CHAT_REMEMBER_MESSAGES: 40,
-  CHAT_SUMMARY_AT: 50,
+  CHAT_TRANSCRIPT_MESSAGES: 60,
   REPLY_RULES: 'Rules for every reply.',
-  isChatSummary: () => false,
   createConfirmationCheck: () => () =>
     Promise.resolve({ confirmed: false, missing: '' }),
   createReplyAgent: () => ({
@@ -47,16 +46,28 @@ jest.mock('../whatsapp/reply-agent', () => ({
       for (const file_id of script.fileIds) {
         await context.toolbox!.run('send_file', { file_id });
       }
-      return { messages: [...messages, new AIMessage(script.text)] };
+      return { reply: script.text };
     },
   }),
 }));
 
-const recordChatTurn = jest.fn(() => Promise.resolve());
+// The thread as it's saved: what the next reply reads.
+const saved: { seq: number; role: string; text: string; at: Date }[] = [];
+type Turn = { userMessage: string; assistantMessage?: string };
+const recordChatTurn = jest.fn((_prisma: unknown, turn: Turn) => {
+  for (const [role, text] of [
+    ['user', turn.userMessage],
+    ['assistant', turn.assistantMessage],
+  ]) {
+    if (text) {
+      saved.push({ seq: saved.length, role: role!, text, at: new Date() });
+    }
+  }
+  return Promise.resolve();
+});
 jest.mock('../chat-conversations/chat-conversations.store', () => ({
-  recordChatTurn: (...args: unknown[]) =>
-    (recordChatTurn as (...a: unknown[]) => Promise<void>)(...args),
-  latestChatMessages: () => Promise.resolve([]),
+  recordChatTurn: (prisma: unknown, turn: Turn) => recordChatTurn(prisma, turn),
+  chatTranscript: () => Promise.resolve({ rows: [...saved] }),
   resolvePeerPhones: (_: unknown, rows: unknown[]) => Promise.resolve(rows),
   appendMessage: () => Promise.resolve(),
   ensureConversation: () => Promise.resolve('thread'),
@@ -131,6 +142,7 @@ const withMenu = () => ({
 
 describe('an agent sending a file', () => {
   beforeEach(() => {
+    saved.length = 0;
     jest.clearAllMocks();
     modelCalls.length = 0;
     script.fileIds = [];

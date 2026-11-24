@@ -226,7 +226,7 @@ export class WhatsAppService
     activity(
       `memory: heap ${mb(heapUsed)} of ${heapLimitMb()} MB, rss ${mb(rss)} MB, ` +
         `external ${mb(external)} MB, ${this.sockets.size} numbers open, ` +
-        `${this.logins.size} logins, ${this.responder.chatsInMemory()} chats remembered`,
+        `${this.logins.size} logins`,
     );
   }
 

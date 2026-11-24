@@ -5,6 +5,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { ChatAgentsModule } from './chat-agents/chat-agents.module';
 import { ChatConversationsModule } from './chat-conversations/chat-conversations.module';
+import { ChatMemoryModule } from './chat-memory/chat-memory.module';
 import { KnowledgeBasesModule } from './knowledge-bases/knowledge-bases.module';
 import { OrdersModule } from './orders/orders.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -19,6 +20,7 @@ import { WhatsAppModule } from './whatsapp/whatsapp.module';
     PrismaModule,
     WhatsAppModule,
     WebhooksModule,
+    ChatMemoryModule,
     ChatAgentsModule,
     ChatConversationsModule,
     KnowledgeBasesModule,

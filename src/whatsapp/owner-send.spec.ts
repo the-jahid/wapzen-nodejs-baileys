@@ -35,8 +35,7 @@ jest.mock('./reply-language', () => ({ createLanguageGuard: () => ({}) }));
 const mockRead = jest.fn<unknown, []>(() => []);
 jest.mock('./reply-agent', () => ({
   CHAT_REMEMBER_MESSAGES: 40,
-  CHAT_SUMMARY_AT: 50,
-  isChatSummary: () => false,
+  CHAT_TRANSCRIPT_MESSAGES: 60,
   createConfirmationCheck: () => () => Promise.resolve(undefined),
   createReplyAgent: () => ({}),
   chatModel: () => ({

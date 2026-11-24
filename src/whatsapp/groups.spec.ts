@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
 import { HttpException } from '@nestjs/common';
-import { AIMessage } from '@langchain/core/messages';
 import type { BaseMessage } from '@langchain/core/messages';
 import { PrismaPg } from '@prisma/adapter-pg';
 import type { ConfigService } from '@nestjs/config';
@@ -103,8 +102,7 @@ jest.mock('./reply-language', () => ({
 }));
 jest.mock('./reply-agent', () => ({
   CHAT_REMEMBER_MESSAGES: 40,
-  CHAT_SUMMARY_AT: 50,
-  isChatSummary: () => false,
+  CHAT_TRANSCRIPT_MESSAGES: 60,
   createConfirmationCheck: () => () =>
     Promise.resolve({ confirmed: false, missing: [] }),
   createReplyAgent: () => ({
@@ -113,9 +111,7 @@ jest.mock('./reply-agent', () => ({
       { context }: { context: { prompt: string } },
     ) => {
       modelCalls.push({ prompt: context.prompt, messages });
-      return Promise.resolve({
-        messages: [...messages, new AIMessage('The AI reply')],
-      });
+      return Promise.resolve({ reply: 'The AI reply' });
     },
   }),
 }));
@@ -958,7 +954,6 @@ describe("a group's thread in Conversations", () => {
     return new ChatConversationsService(
       prisma as unknown as PrismaService,
       whatsapp,
-      responder,
     );
   }
 

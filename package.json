@@ -31,6 +31,8 @@
   "dependencies": {
     "@langchain/anthropic": "^1.6.5",
     "@langchain/core": "^1.4.2",
+    "@langchain/langgraph": "~1.6.0",
+    "@langchain/langgraph-checkpoint-postgres": "~1.1.4",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^12.0.1",
     "@nestjs/core": "^11.0.1",
@@ -53,7 +55,8 @@
     "rxjs": "^7.8.1",
     "sharp": "^0.35.5",
     "undici": "~6.21",
-    "unpdf": "^1.9.1"
+    "unpdf": "^1.9.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.4.3",
