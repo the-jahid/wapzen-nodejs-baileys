@@ -75,6 +75,12 @@ import {
   REPLY_RULES,
   type ReplyContext,
 } from './reply-agent';
+import {
+  type ChatOwnerSends,
+  createOwnerSendLookup,
+  detailsKey,
+  ownerSendNotice,
+} from './owner-send';
 import { createLanguageGuard } from './reply-language';
 import { toWhatsAppFormat } from './whatsapp-format';
 
@@ -181,6 +187,11 @@ export class ChatResponderService {
   private readonly loops = new LoopGuard();
   // When each chat last asked for a person (human-alert.ts).
   private readonly humanAlerts = new HumanAlertLog();
+  // What each chat had sent to the owner's numbers (owner-send.ts).
+  private readonly ownerSendLog = new HumanAlertLog();
+  // Chats whose order the owner's number was alerted to lately.
+  private readonly orderAlerts = new HumanAlertLog();
+  private ownerSendLookup?: ReturnType<typeof createOwnerSendLookup>;
   private agent?: ReturnType<typeof createReplyAgent>;
   private confirmationCheck?: ReturnType<typeof createConfirmationCheck>;
   private languageGuard?: ReturnType<typeof createLanguageGuard>;
@@ -524,10 +535,11 @@ export class ChatResponderService {
     try {
       await chat.setTyping(true).catch(() => undefined);
 
-      const [orders, files, website] = await Promise.all([
+      const [orders, files, website, ownerSends] = await Promise.all([
         this.ordersFor(agent, chat),
         this.filesFor(agent, chat),
         websiteFor(agent),
+        this.ownerSendsFor(apiKey, agent, chat),
       ]);
       const humanHelp = this.humanHelpFor(agent, chat);
       const toolbox = ChatToolbox.for(
@@ -538,6 +550,7 @@ export class ChatResponderService {
         files,
         website,
         humanHelp,
+        ownerSends,
       );
       await this.loadHistory(key, agent.id, chat);
       // The language the owner set, read from the prompt once and remembered:
@@ -569,6 +582,7 @@ export class ChatResponderService {
         toolbox?.filesPrompt ?? '',
         toolbox?.websitePrompt ?? '',
         toolbox?.humanHelpPrompt ?? '',
+        toolbox?.ownerSendPrompt ?? '',
         isGroupJid(chat.peerJid) ? GROUP_CHAT_NOTE : '',
         REPLY_RULES,
       ]
@@ -641,10 +655,12 @@ export class ChatResponderService {
       // The trial's last reply went out: the agent stops now, so the
       // dashboard says so before the next message comes.
       if (trialCount === FREE_TRIAL_REPLIES) await this.endTrial(agent);
-      // The record says which files went out, or the agent would forget and
-      // send them again. The customer already has the files, not this line.
+      // The record says which files went out and what was passed to the team,
+      // or the agent would forget and send them again. The customer already has
+      // the files, and gets none of these lines.
       const record = [
         ...sentFiles.map((name) => `${FILE_SENT_MARK} ${name}`),
+        ...(toolbox?.passedOnRecords ?? []),
         reply,
       ]
         .filter(Boolean)
@@ -886,6 +902,8 @@ export class ChatResponderService {
       activity(`order alert skipped (not a phone number): ${label}`);
       return;
     }
+    const key = `${agent.id}|${chat.phoneNumberId}|${chat.peerJid}|${to}`;
+    this.orderAlerts.claim(key);
     const sendTo = chat.sendTo;
     void (async () => {
       const order = await this.orders.get(agent.userId, result.order_id);
@@ -897,9 +915,10 @@ export class ChatResponderService {
         }),
       );
       activity(`order alert sent: ${label}`);
-    })().catch((err: Error) =>
-      activity(`order alert failed: ${label}: ${err.message}`),
-    );
+    })().catch((err: Error) => {
+      this.orderAlerts.release(key);
+      activity(`order alert failed: ${label}: ${err.message}`);
+    });
   }
 
   // What call_human does in this chat, when the owner switched it on and
@@ -922,9 +941,10 @@ export class ChatResponderService {
     return {
       when,
       pausesAi,
-      call: async (reason) => {
+      call: async (reason, details) => {
         const key = `${agent.id}|${chat.phoneNumberId}|${chat.peerJid}`;
-        if (!this.humanAlerts.claim(key)) return 'recent';
+        const content = detailsKey(details);
+        if (!this.humanAlerts.claim(key, Date.now(), content)) return 'recent';
         const label = `${agent.user.email} - ${agent.agentName}`;
         if (!sendTo || !to) {
           // No number: the red flag on the dashboard is the call.
@@ -946,20 +966,106 @@ export class ChatResponderService {
               customerName: chat.peerName,
               customerPhone: peerPhone,
               reason,
+              details,
               lastMessage: chat.text,
               aiPaused: pausesAi,
             }),
           );
         } catch (err) {
-          this.humanAlerts.release(key);
+          this.humanAlerts.release(key, content);
           activity(`human alert failed: ${label}: ${(err as Error).message}`);
           throw err;
         }
         activity(`human alert sent: ${label}`);
+        // The same details to the same number needn't go by send_to_team too.
+        if (content) {
+          this.ownerSendLog.claim(`${key}|${to}`, Date.now(), content);
+        }
         if (pausesAi) await this.pauseForHuman(agent, chat, label);
         return 'sent';
       },
     };
+  }
+
+  // What send_to_team does in this chat, when the owner's text asks for
+  // information to be sent to a number (owner-send.ts). "My WhatsApp" with no
+  // number written is the one saved on the Human Intervention card, or else the
+  // order-alert number. A chat whose order was just placed already went to that
+  // one, and changes to it go there too, so it isn't sent there twice. Not in groups. A failed lookup is logged and
+  // the agent answers without it.
+  private async ownerSendsFor(
+    apiKey: string,
+    agent: ReplyingAgent,
+    chat: IncomingChat,
+  ): Promise<ChatOwnerSends | undefined> {
+    const { sendTo } = chat;
+    if (!sendTo || isGroupJid(chat.peerJid)) return undefined;
+    const agentPhone = agent.phoneNumber?.phoneNumber;
+    const takesOrders =
+      agent.orderEnabled && agent.tools.some((t) => t.tool.type === 'order');
+    const humanPhone =
+      agent.humanInterventionEnabled === true
+        ? (agent.humanInterventionPhone ?? '').trim()
+        : '';
+    const orderPhone = takesOrders ? (agent.orderNotifyPhone ?? '').trim() : '';
+    const ordersTo = orderPhone ? toE164(orderPhone, agentPhone) : null;
+    try {
+      this.ownerSendLookup ??= createOwnerSendLookup(apiKey);
+      const list = await this.ownerSendLookup(
+        [agent.systemPrompt, takesOrders ? agent.orderInstructions : '']
+          .filter(Boolean)
+          .join('\n\n'),
+        {
+          agentPhone,
+          savedPhone: humanPhone ? toE164(humanPhone, agentPhone) : ordersTo,
+        },
+      );
+      if (!list.length) return undefined;
+      return {
+        list,
+        send: async (to, details, note) => {
+          const key = `${agent.id}|${chat.phoneNumberId}|${chat.peerJid}|${to.phone}`;
+          const content = detailsKey(details) || note;
+          const label = `${agent.user.email} - ${agent.agentName}`;
+          if (this.orderAlerts.isOpen(key)) return 'already';
+          if (!this.ownerSendLog.claim(key, Date.now(), content)) {
+            if (this.ownerSendLog.has(key, content)) return 'already';
+            activity(`info send skipped (too many in this chat): ${label}`);
+            throw new Error('too many sends in this chat');
+          }
+          try {
+            const [{ peerPhone }] = await resolvePeerPhones(this.prisma, [
+              {
+                phoneNumberId: chat.phoneNumberId,
+                peerJid: chat.peerJid,
+                peerPhone: chat.peerPhone ?? null,
+              },
+            ]);
+            await sendTo(
+              to.phone,
+              ownerSendNotice({
+                agentName: agent.agentName,
+                customerName: chat.peerName,
+                customerPhone: peerPhone,
+                details,
+                note,
+              }),
+            );
+          } catch (err) {
+            this.ownerSendLog.release(key, content);
+            activity(`info send failed: ${label}: ${(err as Error).message}`);
+            throw err;
+          }
+          activity(`info sent to the owner's number: ${label}`);
+          return 'sent';
+        },
+      };
+    } catch (err) {
+      this.logger.warn(
+        `reading what chat agent ${agent.id} sends on failed: ${(err as Error).message}`,
+      );
+      return undefined;
+    }
   }
 
   // After a sent alert, with the owner's say-so: the AI stops replying to this

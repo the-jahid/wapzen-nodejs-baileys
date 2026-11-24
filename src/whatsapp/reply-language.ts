@@ -1,5 +1,6 @@
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { createHash } from 'node:crypto';
+import { asciiDigits } from './digits';
 import { chatModel } from './reply-agent';
 
 // Keeps a chat agent to the reply language its owner set (2026-11-23). An
@@ -25,23 +26,12 @@ const MIN_LETTERS = 4;
 // "1 to 2 days" into "2 to 3 days", so each one has to keep every number.
 const REWRITE_ATTEMPTS = 2;
 
-// Where 0 is in each script's run of digits 0–9: ASCII, Arabic-Indic, Persian,
-// Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada,
-// Malayalam, Thai, Lao, Myanmar, Khmer, full width.
-const DIGIT_ZEROS = [
-  0x30, 0x660, 0x6f0, 0x966, 0x9e6, 0xa66, 0xae6, 0xb66, 0xbe6, 0xc66, 0xce6,
-  0xd66, 0xe50, 0xed0, 0x1040, 0x17e0, 0xff10,
-];
-
 // The numbers a message states, whatever digits it writes them in ("٢٥٠" is
 // 250), so a rewrite can be checked for a changed price or time.
 export function numbersIn(text: string): string[] {
-  const ascii = text.replace(/\p{Nd}/gu, (d) => {
-    const code = d.codePointAt(0)!;
-    const zero = DIGIT_ZEROS.find((z) => code >= z && code <= z + 9);
-    return zero === undefined ? d : String(code - zero);
-  });
-  return (ascii.match(/\d+/g) ?? []).map((n) => String(Number(n))).sort();
+  return (asciiDigits(text).match(/\d+/g) ?? [])
+    .map((n) => String(Number(n)))
+    .sort();
 }
 
 // Numbers a rewrite may write as a word instead: Arabic says "two bottles" with

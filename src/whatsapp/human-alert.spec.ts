@@ -195,14 +195,14 @@ describe('call_human in the toolbox', () => {
       box.run(CALL_HUMAN_FUNCTION, { reason: 'still angry' }),
     ]);
     expect(call).toHaveBeenCalledTimes(1);
-    expect(call).toHaveBeenCalledWith('angry');
+    expect(call).toHaveBeenCalledWith('angry', []);
     expect(first).toContain('has been told');
     expect(second).toBe(first);
   });
 
   it('says so when it fails, and can try again', async () => {
     const call = jest
-      .fn<Promise<'sent' | 'recent'>, [string]>()
+      .fn<Promise<'sent' | 'recent'>, Parameters<ChatHumanHelp['call']>>()
       .mockRejectedValueOnce(new Error('offline'))
       .mockResolvedValueOnce('recent');
     const box = ChatToolbox.for(
@@ -276,7 +276,7 @@ describe('the responder’s human help', () => {
     const { sendTo, helpFor, update } = setup({});
     const help = (await helpFor())!;
     expect(help.when).toBe('The customer asks for a refund');
-    expect(await help.call('Refund for order #1003')).toBe('sent');
+    expect(await help.call('Refund for order #1003', [])).toBe('sent');
     expect(sendTo).toHaveBeenCalledWith(
       '+8801711111111',
       expect.stringContaining('*Why:* Refund for order #1003'),
@@ -285,7 +285,7 @@ describe('the responder’s human help', () => {
       'human alert sent: owner@example.com - Dhaka Bites',
     );
     // The next message in the same chat gets a new toolbox, not a new alert.
-    expect(await (await helpFor())!.call('again')).toBe('recent');
+    expect(await (await helpFor())!.call('again', [])).toBe('recent');
     expect(sendTo).toHaveBeenCalledTimes(1);
     // The AI stays on unless the owner chose otherwise.
     expect(update).not.toHaveBeenCalled();
@@ -301,7 +301,7 @@ describe('the responder’s human help', () => {
     });
     const help = (await helpFor())!;
     expect(help.pausesAi).toBe(true);
-    expect(await help.call('Refund')).toBe('sent');
+    expect(await help.call('Refund', [])).toBe('sent');
     expect(ensureConversation).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -331,7 +331,7 @@ describe('the responder’s human help', () => {
       humanInterventionPhone: '',
       humanInterventionPauseAi: true,
     });
-    expect(await (await helpFor())!.call('Refund')).toBe('sent');
+    expect(await (await helpFor())!.call('Refund', [])).toBe('sent');
     expect(sendTo).not.toHaveBeenCalled();
     expect(update).toHaveBeenCalledWith({
       where: { id: 'thread-1' },
@@ -350,7 +350,7 @@ describe('the responder’s human help', () => {
       humanInterventionPauseAi: true,
     });
     sendTo.mockRejectedValueOnce(new Error('offline'));
-    await expect((await helpFor())!.call('x')).rejects.toThrow();
+    await expect((await helpFor())!.call('x', [])).rejects.toThrow();
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -369,10 +369,30 @@ describe('the responder’s human help', () => {
   it('gives the claim back when the send fails', async () => {
     const { sendTo, helpFor } = setup({});
     sendTo.mockRejectedValueOnce(new Error('not on WhatsApp'));
-    await expect((await helpFor())!.call('x')).rejects.toThrow(
+    await expect((await helpFor())!.call('x', [])).rejects.toThrow(
       'not on WhatsApp',
     );
-    expect(await (await helpFor())!.call('x')).toBe('sent');
+    expect(await (await helpFor())!.call('x', [])).toBe('sent');
+  });
+
+  it('sends details the owner has not had, even within the cooldown', async () => {
+    const { sendTo, helpFor } = setup({});
+    const age = (value: string) => [
+      { label: 'Name', value: 'Karim' },
+      { label: 'Age', value },
+    ];
+    const call = async (value: string) =>
+      (await helpFor())!.call('New patient', age(value));
+    expect(await call('52')).toBe('sent');
+    expect(sendTo).toHaveBeenLastCalledWith(
+      '+8801711111111',
+      expect.stringContaining('*Name:* Karim\n*Age:* 52'),
+    );
+    expect(await call('52')).toBe('recent');
+    expect(await call('62')).toBe('sent');
+    // Nothing new to say is still held back.
+    expect(await (await helpFor())!.call('again', [])).toBe('recent');
+    expect(sendTo).toHaveBeenCalledTimes(2);
   });
 });
 

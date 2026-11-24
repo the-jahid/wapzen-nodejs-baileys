@@ -14,6 +14,16 @@ import {
   humanHelpPrompt,
 } from '../whatsapp/human-alert';
 import {
+  type ChatOwnerSends,
+  ownerSendParameters,
+  ownerSendPrompt,
+  PASSED_ON_MARK,
+  passedOnRecord,
+  readDetails,
+  readNote,
+  SEND_TO_TEAM_FUNCTION,
+} from '../whatsapp/owner-send';
+import {
   HOME_TEXT_CHARS,
   pageForModel,
   READ_WEBSITE_FUNCTION,
@@ -38,6 +48,7 @@ export type ToolDefinition = {
     parameters:
       | ReturnType<typeof parameterSchema | typeof orderParameters>
       | ReturnType<typeof fileParameters>
+      | ReturnType<typeof ownerSendParameters>
       | typeof WEBSITE_PARAMETERS
       | typeof CALL_HUMAN_PARAMETERS;
   };
@@ -107,6 +118,8 @@ export class ChatToolbox {
   private orderMissing = '';
   // The files sent in this reply, by name, once each however often it's asked.
   private readonly filesSent = new Set<string>();
+  // What went to the owner's numbers in this reply, as the record keeps it.
+  private readonly passedOn: string[] = [];
 
   private constructor(
     private readonly label: string,
@@ -116,13 +129,15 @@ export class ChatToolbox {
     private readonly files: ChatFile[] = [],
     private readonly website?: ChatWebsite,
     private readonly humanHelp?: ChatHumanHelp,
+    private readonly ownerSends?: ChatOwnerSends,
   ) {}
 
   // The toolbox for one reply, or null when the agent has nothing it can do,
   // so callers never special-case an agent that only talks. Take Order joins
   // only when orders is given, so with ordering off the model can't call it,
   // send_file only when the agent has files, read_website only when it
-  // has a website to read, and call_human only when the owner set it up.
+  // has a website to read, call_human only when the owner set it up, and
+  // send_to_team only when their prompt asks to send information on.
   static for(
     tools: Tool[],
     agentId: string,
@@ -131,6 +146,7 @@ export class ChatToolbox {
     files: ChatFile[] = [],
     website?: ChatWebsite,
     humanHelp?: ChatHumanHelp,
+    ownerSends?: ChatOwnerSends,
   ): ChatToolbox | null {
     const box = new ChatToolbox(
       `chat agent ${agentId}`,
@@ -139,6 +155,7 @@ export class ChatToolbox {
       files,
       website,
       humanHelp,
+      ownerSends,
     );
     for (const row of tools) {
       const tool = resolve(row);
@@ -165,7 +182,10 @@ export class ChatToolbox {
     if (files.length) box.byName.delete(SEND_FILE_FUNCTION);
     if (website) box.byName.delete(READ_WEBSITE_FUNCTION);
     if (humanHelp) box.byName.delete(CALL_HUMAN_FUNCTION);
-    return box.byName.size || files.length || website || humanHelp ? box : null;
+    if (ownerSends) box.byName.delete(SEND_TO_TEAM_FUNCTION);
+    return box.byName.size || files.length || website || humanHelp || ownerSends
+      ? box
+      : null;
   }
 
   // When to bring a person in and what to say after, for the prompt.
@@ -173,6 +193,11 @@ export class ChatToolbox {
     return this.humanHelp
       ? humanHelpPrompt(this.humanHelp.when, this.humanHelp.pausesAi)
       : '';
+  }
+
+  // What to send to the owner's numbers and when, for the prompt.
+  get ownerSendPrompt() {
+    return this.ownerSends ? ownerSendPrompt(this.ownerSends.list) : '';
   }
 
   // The website, its home page and how to read the rest, for the prompt.
@@ -191,6 +216,11 @@ export class ChatToolbox {
         : `Call ${READ_WEBSITE_FUNCTION} with no url to read the home page, which lists the site's other pages.`,
     );
     return lines.join('\n');
+  }
+
+  // What went to the owner's numbers in this reply, one line each.
+  get passedOnRecords() {
+    return [...this.passedOn];
   }
 
   // The files sent in this reply, by name.
@@ -215,8 +245,17 @@ export class ChatToolbox {
 
   // The model sometimes copies the mark it sees in its history, in live tests as
   // "📎 Here's our location" and "Here's the menu! 📎 menu.pdf". That is for the
-  // record only, so it never reaches the person.
-  withoutFileMarks(text: string) {
+  // record only, so it never reaches the person, and neither does a copied
+  // "passed to the team" line.
+  withoutFileMarks(raw: string) {
+    const text = raw.includes(PASSED_ON_MARK)
+      ? raw
+          .split('\n')
+          .filter((line) => !line.trim().startsWith(PASSED_ON_MARK))
+          .join('\n')
+          .replaceAll(PASSED_ON_MARK, '')
+          .trim()
+      : raw;
     if (!text.includes(FILE_SENT_MARK)) return text;
     const names = this.sentFiles.map(escapeRegExp).join('|');
     return (
@@ -295,6 +334,17 @@ export class ChatToolbox {
         },
       });
     }
+    if (this.ownerSends) {
+      definitions.push({
+        type: 'function',
+        function: {
+          name: SEND_TO_TEAM_FUNCTION,
+          description:
+            "Sends information from this chat to the owner's WhatsApp, in the cases your instructions describe.",
+          parameters: ownerSendParameters(this.ownerSends.list),
+        },
+      });
+    }
     return definitions;
   }
 
@@ -332,6 +382,9 @@ export class ChatToolbox {
     }
     if (name === CALL_HUMAN_FUNCTION && this.humanHelp) {
       return this.callHuman(this.humanHelp, args ?? {});
+    }
+    if (name === SEND_TO_TEAM_FUNCTION && this.ownerSends) {
+      return this.sendToTeam(this.ownerSends, args ?? {});
     }
     const tool = this.byName.get(name);
     if (!tool) return `Unknown tool "${name}".`;
@@ -413,12 +466,17 @@ export class ChatToolbox {
   // responder's.
   private humanCalled?: Promise<string>;
   private callHuman(help: ChatHumanHelp, args: Record<string, unknown>) {
+    const reason = argumentToString(args.reason).trim();
+    const details = readDetails(args.details);
     this.humanCalled ??= help
-      .call(argumentToString(args.reason).trim())
+      .call(reason, details)
       .then((outcome) => {
         logger.log(`${this.label} called a human (${outcome})`);
+        if (outcome === 'sent') {
+          this.passedOn.push(passedOnRecord(details, reason));
+        }
         return outcome === 'recent'
-          ? 'The team was already told about this chat a short while ago. Tell the person someone will get back to them here soon; do not call again.'
+          ? 'The team was already told about this chat a short while ago. Tell the person someone will get back to them here soon; do not call again, and do not say anything new was passed on.'
           : help.pausesAi
             ? 'A person from the team has been told on WhatsApp and will take over this chat. Tell the person someone will continue with them here soon. You will not reply in this chat again.'
             : 'A person from the team has been told on WhatsApp. Tell the person someone will get back to them here soon.';
@@ -429,6 +487,43 @@ export class ChatToolbox {
         return "The team could not be reached right now. Don't say anyone was told; help as best you can.";
       });
     return this.humanCalled;
+  }
+
+  // Sends what the person gave to a number the owner named. The model only
+  // picks which of the owner's instructions this is, never a number.
+  private async sendToTeam(
+    sends: ChatOwnerSends,
+    args: Record<string, unknown>,
+  ) {
+    const to = sends.list.find(
+      (send) => send.key === argumentToString(args.send_id).trim(),
+    );
+    if (!to) return 'There is nothing to send with that send_id.';
+    const details = readDetails(args.details);
+    const note = readNote(args.note);
+    if (!details.length && !note) {
+      return 'Nothing was sent: no information was given. Put what the person gave in details and call again.';
+    }
+    // The model calls create_order and this together, and the order's own alert
+    // may go to the same number: the order goes first, so sends.send knows.
+    if (this.orderConfirmed) {
+      await new Promise((resolve) => setImmediate(resolve));
+      await this.placed;
+    }
+    try {
+      const outcome = await sends.send(to, details, note);
+      logger.log(`${this.label} passed on information (${outcome})`);
+      if (outcome === 'already') {
+        return 'The team already has exactly this from this chat, so it was not sent again. Tell the person it has been passed on.';
+      }
+      this.passedOn.push(passedOnRecord(details, note));
+      return "It has been sent to the team on WhatsApp. Tell the person briefly that it was passed on, in your own words, without the team's number.";
+    } catch (err) {
+      logger.warn(
+        `${this.label} could not pass on information: ${(err as Error).message}`,
+      );
+      return "It could not be sent right now. Tell the person you couldn't pass it on yet; never ask them to send it themselves.";
+    }
   }
 
   // A page of the owner's site, or why it couldn't be read, for the model.
