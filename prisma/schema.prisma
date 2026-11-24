@@ -51,7 +51,8 @@ model User {
   voicePhoneNumbers   VoicePhoneNumber[]
   voiceTools          VoiceTool[]
   voiceKnowledgeBases VoiceKnowledgeBase[]
-  outboundCampaigns   OutboundCampaign[]
+  broadcasts          Broadcast[]
+  broadcastContacts   BroadcastContact[]
   calls               Call[]
   voiceUsage          VoiceUsage?
   activityLogs        ActivityLog[]
@@ -448,7 +449,7 @@ model AgentFile {
 // The Go voice server's tables (server/, migration 20261121000000_voice_agents).
 // Both servers share this database and this schema is the only one; the Go
 // server reads and writes these with plain SQL and runs no migrations of its
-// own. CHECK constraints, partial indexes and the campaign-counter triggers
+// own. CHECK constraints, partial indexes and triggers
 // live in the migration SQL. whatsmeow's whatsmeow_* tables are created and
 // versioned by whatsmeow itself and are not modelled here.
 //
@@ -553,35 +554,35 @@ model VoiceKnowledgeBaseSource {
 // A voice agent: answers and places WhatsApp calls. Only an active agent
 // (status = 'active') answers or places calls.
 model VoiceAgent {
-  id                         String   @id @default(dbgenerated("(gen_random_uuid())::text"))
-  userId                     String   @map("user_id")
-  agentName                  String   @map("agent_name")
-  language                   String   @default("en-US")
-  timezone                   String?
+  id                        String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId                    String   @map("user_id")
+  agentName                 String   @map("agent_name")
+  language                  String   @default("en-US")
+  timezone                  String?
   // active | inactive
-  status                     String   @default("active")
-  promptBeginMessageMode     String   @default("agent_speaks_first") @map("prompt_begin_message_mode")
-  promptBeginMessage         String?  @default("Hello! How can I help you today?") @map("prompt_begin_message")
-  promptBeginMessageDelayMs  Int?     @default(1000) @map("prompt_begin_message_delay_ms")
-  promptSystemPrompt         String?  @default("You are a helpful, friendly voice assistant on a phone call. Keep responses clear and concise, speak naturally, and stay polite and professional at all times.") @map("prompt_system_prompt")
+  status                    String   @default("active")
+  promptBeginMessageMode    String   @default("agent_speaks_first") @map("prompt_begin_message_mode")
+  promptBeginMessage        String?  @default("Hello! How can I help you today?") @map("prompt_begin_message")
+  promptBeginMessageDelayMs Int?     @default(1000) @map("prompt_begin_message_delay_ms")
+  promptSystemPrompt        String?  @default("You are a helpful, friendly voice assistant on a phone call. Keep responses clear and concise, speak naturally, and stay polite and professional at all times.") @map("prompt_system_prompt")
   // OpenAI Realtime is the only live-call engine; these pick its voice.
-  voiceOpenaiVoiceId         String   @default("zephyr") @map("voice_openai_voice_id")
-  voiceOpenaiVoiceName       String   @default("Zephyr") @map("voice_openai_voice_name")
-  postCallAnalysisProvider   String   @default("openai") @map("post_call_analysis_provider")
-  postCallAnalysisModel      String?  @map("post_call_analysis_model")
-  createdAt                  DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt                  DateTime @default(now()) @map("updated_at") @db.Timestamptz
-  phoneNumberId              String?  @map("phone_number_id")
-  voiceOpenaiSpeed           Float    @default(1) @map("voice_openai_speed")
-  voiceOpenaiVolume          Float    @default(1) @map("voice_openai_volume")
-  voiceOpenaiRealtimeModel   String   @default("gemini-3.8-live") @map("voice_openai_realtime_model")
+  voiceOpenaiVoiceId        String   @default("zephyr") @map("voice_openai_voice_id")
+  voiceOpenaiVoiceName      String   @default("Zephyr") @map("voice_openai_voice_name")
+  postCallAnalysisProvider  String   @default("openai") @map("post_call_analysis_provider")
+  postCallAnalysisModel     String?  @map("post_call_analysis_model")
+  createdAt                 DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                 DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  phoneNumberId             String?  @map("phone_number_id")
+  voiceOpenaiSpeed          Float    @default(1) @map("voice_openai_speed")
+  voiceOpenaiVolume         Float    @default(1) @map("voice_openai_volume")
+  voiceOpenaiRealtimeModel  String   @default("gemini-3.8-live") @map("voice_openai_realtime_model")
 
-  user              User                 @relation(fields: [userId], references: [id], onDelete: Cascade, map: "agents_user_id_fkey")
-  phoneNumber       VoicePhoneNumber?    @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull, map: "agents_phone_number_id_fkey")
-  tools             AgentTool[]
-  knowledgeBases    VoiceKnowledgeBase[]
-  outboundCampaigns OutboundCampaign[]
-  calls             Call[]
+  user           User                 @relation(fields: [userId], references: [id], onDelete: Cascade, map: "agents_user_id_fkey")
+  phoneNumber    VoicePhoneNumber?    @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull, map: "agents_phone_number_id_fkey")
+  tools          AgentTool[]
+  knowledgeBases VoiceKnowledgeBase[]
+  broadcasts     Broadcast[]
+  calls          Call[]
 
   @@unique([userId, agentName], map: "agents_user_id_agent_name_key")
   @@index([userId], map: "idx_agents_user_id")
@@ -602,90 +603,89 @@ model AgentTool {
   @@map("agent_tools")
 }
 
-// An outbound calling campaign. The counters are kept by triggers on
-// campaign_leads and calls.
-model OutboundCampaign {
-  id                String    @id @default(dbgenerated("(gen_random_uuid())::text"))
-  userId            String    @map("user_id")
-  campaignName      String    @map("campaign_name")
-  // draft | running | paused | completed | failed
-  status            String    @default("draft")
-  leadsCount        Int       @default(0) @map("leads_count")
-  callsPlaced       Int       @default(0) @map("calls_placed")
-  answeredCalls     Int       @default(0) @map("answered_calls")
-  successfulCalls   Int       @default(0) @map("successful_calls")
-  todayCalls        Int       @default(0) @map("today_calls")
-  totalUsageSeconds Int       @default(0) @map("total_usage_seconds")
-  budgetUsd         Decimal?  @map("budget_usd") @db.Decimal(12, 2)
-  startedAt         DateTime? @map("started_at") @db.Timestamptz
-  completedAt       DateTime? @map("completed_at") @db.Timestamptz
-  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt         DateTime  @default(now()) @map("updated_at") @db.Timestamptz
-  agentId           String?   @map("agent_id")
+// A voice broadcast (migration 20261123000001_broadcasts). A user may have any
+// number; each is created with one of their voice agents selected.
+model Broadcast {
+  id           String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  userId       String   @map("user_id")
+  name         String
+  agentId      String?  @map("agent_id")
+  // Auto-dialer switch (migration 20261123000005_broadcast_dialer). The
+  // dialer sets it itself, with paused_reason, when the number, agent or
+  // voice minutes stop calls.
+  paused       Boolean  @default(false)
+  pausedReason String?  @map("paused_reason")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @default(now()) @map("updated_at") @db.Timestamptz
 
-  user  User           @relation(fields: [userId], references: [id], onDelete: Cascade, map: "outbound_campaigns_user_id_fkey")
-  agent VoiceAgent?    @relation(fields: [agentId], references: [id], onDelete: SetNull, map: "outbound_campaigns_agent_id_fkey")
-  leads CampaignLead[]
-  calls Call[]
+  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade, map: "broadcasts_user_id_fkey")
+  agent    VoiceAgent?        @relation(fields: [agentId], references: [id], onDelete: SetNull, map: "broadcasts_agent_id_fkey")
+  contacts BroadcastContact[]
 
-  @@unique([userId, campaignName], map: "idx_outbound_campaigns_user_name_unique")
-  @@index([userId], map: "idx_outbound_campaigns_user_id")
-  @@map("outbound_campaigns")
+  @@index([userId, createdAt(sort: Desc)], map: "idx_broadcasts_user_id")
+  @@map("broadcasts")
 }
 
-// A number an outbound campaign calls.
-model CampaignLead {
-  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
-  campaignId      String    @map("campaign_id")
-  // E.164
-  phoneNumber     String    @map("phone_number")
-  email           String?
-  firstName       String?   @map("first_name")
-  lastName        String?   @map("last_name")
-  // pending | calling | called | failed
-  status          String    @default("pending")
-  attempts        Int       @default(0)
-  lastAttemptedAt DateTime? @map("last_attempted_at") @db.Timestamptz
-  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+// The people a broadcast calls (migration 20261123000002_broadcast_contacts).
+// phone_number is required (E.164, normalised by the Go server) and unique
+// within the broadcast.
+model BroadcastContact {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  broadcastId String   @map("broadcast_id")
+  userId      String   @map("user_id")
+  phoneNumber String   @map("phone_number")
+  firstName   String?  @map("first_name")
+  lastName    String?  @map("last_name")
+  email       String?
+  address     String?
+  // Auto-dialer state (migration 20261123000005_broadcast_dialer):
+  // idle | queued | calling | answered | no_answer | failed.
+  callStatus  String   @default("queued") @map("call_status")
+  queuedAt    DateTime @default(now()) @map("queued_at") @db.Timestamptz
+  lastCallId  String?  @map("last_call_id")
+  lastError   String?  @map("last_error")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz
 
-  campaign OutboundCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade, map: "campaign_leads_campaign_id_fkey")
-  calls    Call[]
+  broadcast Broadcast @relation(fields: [broadcastId], references: [id], onDelete: Cascade, map: "broadcast_contacts_broadcast_id_fkey")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade, map: "broadcast_contacts_user_id_fkey")
+  lastCall  Call?     @relation("BroadcastContactLastCall", fields: [lastCallId], references: [id], onDelete: SetNull, map: "broadcast_contacts_last_call_id_fkey")
+  calls     Call[]    @relation("BroadcastContactCalls")
 
-  @@unique([campaignId, phoneNumber], map: "campaign_leads_campaign_id_phone_number_key")
-  @@index([campaignId], map: "idx_campaign_leads_campaign_id")
-  @@index([campaignId, status], map: "idx_campaign_leads_campaign_status")
-  @@map("campaign_leads")
+  @@index([broadcastId, phoneNumber], map: "idx_broadcast_contacts_broadcast_phone")
+  @@index([broadcastId, createdAt(sort: Desc)], map: "idx_broadcast_contacts_broadcast")
+  @@index([userId], map: "idx_broadcast_contacts_user_id")
+  @@map("broadcast_contacts")
 }
 
 // One WhatsApp call, inbound or outbound.
 model Call {
-  id              String    @id @default(dbgenerated("(gen_random_uuid())::text"))
+  id                 String    @id @default(dbgenerated("(gen_random_uuid())::text"))
   // WhatsApp's own call id
-  callId          String    @map("call_id")
-  userId          String    @map("user_id")
-  phoneNumberId   String?   @map("phone_number_id")
-  peer            String
+  callId             String    @map("call_id")
+  userId             String    @map("user_id")
+  phoneNumberId      String?   @map("phone_number_id")
+  peer               String
   // received | answered | ended | declined | failed
-  status          String    @default("received")
-  endReason       String?   @map("end_reason")
-  answeredAt      DateTime? @map("answered_at") @db.Timestamptz
-  endedAt         DateTime? @map("ended_at") @db.Timestamptz
-  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt       DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+  status             String    @default("received")
+  endReason          String?   @map("end_reason")
+  summary            String?
+  broadcastContactId String?   @map("broadcast_contact_id")
+  answeredAt         DateTime? @map("answered_at") @db.Timestamptz
+  endedAt            DateTime? @map("ended_at") @db.Timestamptz
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime  @default(now()) @map("updated_at") @db.Timestamptz
   // inbound | outbound
-  callType        String    @default("inbound") @map("call_type")
-  agentId         String?   @map("agent_id")
-  durationSeconds Int?      @map("duration_seconds")
-  campaignId      String?   @map("campaign_id")
-  leadId          String?   @map("lead_id")
+  callType           String    @default("inbound") @map("call_type")
+  agentId            String?   @map("agent_id")
+  durationSeconds    Int?      @map("duration_seconds")
 
-  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade, map: "calls_user_id_fkey")
-  phoneNumber VoicePhoneNumber? @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull, map: "calls_phone_number_id_fkey")
-  agent       VoiceAgent?       @relation(fields: [agentId], references: [id], onDelete: SetNull, map: "calls_agent_id_fkey")
-  campaign    OutboundCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull, map: "calls_campaign_id_fkey")
-  lead        CampaignLead?     @relation(fields: [leadId], references: [id], onDelete: SetNull, map: "calls_lead_id_fkey")
-  messages    CallMessage[]
+  user             User               @relation(fields: [userId], references: [id], onDelete: Cascade, map: "calls_user_id_fkey")
+  phoneNumber      VoicePhoneNumber?  @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull, map: "calls_phone_number_id_fkey")
+  agent            VoiceAgent?        @relation(fields: [agentId], references: [id], onDelete: SetNull, map: "calls_agent_id_fkey")
+  broadcastContact BroadcastContact?  @relation("BroadcastContactCalls", fields: [broadcastContactId], references: [id], onDelete: SetNull, map: "calls_broadcast_contact_id_fkey")
+  lastCallOf       BroadcastContact[] @relation("BroadcastContactLastCall")
+  messages         CallMessage[]
 
   @@index([callId], map: "idx_calls_call_id")
   @@index([userId], map: "idx_calls_user_id")

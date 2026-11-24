@@ -1,5 +1,6 @@
 import { Logger } from '@nestjs/common';
 import type { PrismaClient } from '../generated/prisma/client';
+import { TX_OPTIONS } from '../prisma/prisma.service';
 import { AUTO_AGENT_NAME } from './auto-agent';
 import {
   DEFAULT_MODEL,
@@ -39,7 +40,7 @@ export async function createStarterAgent(
           systemPrompt: DEFAULT_SYSTEM_PROMPT,
         },
       });
-    });
+    }, TX_OPTIONS);
   } catch (err) {
     logger.error(
       `creating the starter agent for user ${userId} failed: ${(err as Error).message}`,

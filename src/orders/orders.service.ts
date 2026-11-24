@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { activity } from '../activity/activity';
 import { ensureConversation } from '../chat-conversations/chat-conversations.store';
 import { Prisma } from '../generated/prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService, TX_OPTIONS } from '../prisma/prisma.service';
 import type { FieldError } from '../tools/tools.types';
 import { DEFAULT_ORDER_FIELDS, type OrderField } from './order-tool';
 import {
@@ -219,7 +219,7 @@ export class OrdersService {
         created: true,
         updated: false,
       };
-    });
+    }, TX_OPTIONS);
   }
 
   // One page, newest first. newOrders counts the account's new orders whatever

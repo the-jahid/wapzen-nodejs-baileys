@@ -1,4 +1,5 @@
 import type { PrismaClient } from '../generated/prisma/client';
+import { TX_OPTIONS } from '../prisma/prisma.service';
 import {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER,
@@ -88,5 +89,5 @@ export async function ensureAgentForNumber(
       select: { id: true },
     });
     return { kind: 'created', agentId: row.id };
-  });
+  }, TX_OPTIONS);
 }

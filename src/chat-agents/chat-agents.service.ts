@@ -2,7 +2,7 @@ import { HttpException, HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { AgentFilesService } from '../agent-files/agent-files.service';
 import { Prisma } from '../generated/prisma/client';
 import { cleanText, toE164 } from '../orders/orders.types';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService, TX_OPTIONS } from '../prisma/prisma.service';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import {
   apiError,
@@ -26,11 +26,10 @@ import {
 
 type Tx = Prisma.TransactionClient;
 
-// Prisma's defaults (2s to get a connection, 5s for the whole transaction)
-// were hit on 2026-11-18: an agent save is a dozen sequential trips to the
-// database, and overlapping saves of one agent queued on its row lock with
-// their 5s already running, so Prisma threw the work away.
-const TX_OPTIONS = { maxWait: 10_000, timeout: 20_000 };
+// TX_OPTIONS: Prisma's defaults (2s to get a connection, 5s for the whole
+// transaction) were hit on 2026-11-18: an agent save is a dozen sequential
+// trips to the database, and overlapping saves of one agent queued on its row
+// lock with their 5s already running, so Prisma threw the work away.
 // A save that lost a deadlock (P2034) is safe to run again: the database
 // rolled it back whole.
 const TX_ATTEMPTS = 3;

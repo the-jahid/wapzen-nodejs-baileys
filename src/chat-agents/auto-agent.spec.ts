@@ -6,6 +6,8 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/prisma/client';
 import { AUTO_AGENT_NAME, ensureAgentForNumber } from './auto-agent';
 
+jest.mock('@nestjs/config', () => ({ ConfigService: class {} }));
+
 // Linking a number gives it an agent with no naming step. Runs on PGlite with
 // the real migrations, because the agent limit and unique number live there.
 
