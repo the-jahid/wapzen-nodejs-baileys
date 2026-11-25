@@ -295,6 +295,16 @@
             },
             "type": "object"
           },
+          "behavior": {
+            "description": "How the agent writes its replies. short_replies on (the default): a line or two, like a person texting. Off: the agent chooses the length itself.",
+            "properties": {
+              "short_replies": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
           "human_intervention": {
             "description": "Human intervention: when it is on and a chat matches the description, the agent calls a person in. It messages the optional number from its own number (customer, reason, last message, chat link), at most once per chat every 30 minutes, and with human_intervention_pause_ai turns the AI off for that customer and flags the conversation needs_attention. Not used in groups.",
             "properties": {
@@ -775,6 +785,16 @@
             "description": "Whether the agent sends the owner's uploaded images and files (uploaded on /v1/chat-agents/{id}/files). Off, they stay uploaded but are never sent.",
             "properties": {
               "files_enabled": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "behavior": {
+            "description": "How the agent writes its replies. short_replies on (the default): a line or two, like a person texting. Off: the agent chooses the length itself.",
+            "properties": {
+              "short_replies": {
                 "default": true,
                 "type": "boolean"
               }
@@ -2588,6 +2608,16 @@
             "description": "Whether the agent sends the owner's uploaded images and files (uploaded on /v1/chat-agents/{id}/files). Off, they stay uploaded but are never sent.",
             "properties": {
               "files_enabled": {
+                "default": true,
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "behavior": {
+            "description": "How the agent writes its replies. short_replies on (the default): a line or two, like a person texting. Off: the agent chooses the length itself.",
+            "properties": {
+              "short_replies": {
                 "default": true,
                 "type": "boolean"
               }

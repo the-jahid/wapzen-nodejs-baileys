@@ -105,6 +105,16 @@ export const REPLY_RULES = [
   "- Language: when the instructions above say which language to reply in, write every reply in it, even when the customer writes in another language and even when earlier replies in this chat, these rules, the notes, knowledge passages or function results are in another language. Switch only if the instructions above allow it. When they name no language, reply in the language of the customer's latest message.",
 ].join('\n');
 
+// Added before REPLY_RULES while the agent's "Short replies" switch is on (the
+// default). Off, the model picks the length itself. The owner's own prompt
+// still wins when it asks for more detail.
+export const SHORT_REPLY_STYLE = [
+  'Reply length: write like a real person texting on WhatsApp.',
+  '- Keep every reply very short: usually one or two short sentences, often just a few words. Answer only what was asked.',
+  '- No greeting or sign-off on every message, no repeating the question, no extra options or follow-up offers unless asked.',
+  '- Go longer only when the person asks for details or a full list, or the instructions above ask for it (such as an order summary).',
+].join('\n');
+
 // Every chat agent answers with the same model, Claude Haiku 5.5, whatever the
 // row says. It refuses temperature, top_p and top_k, so agent.temperature
 // isn't sent. Thinking spends the same tokens as the answer, so the limits

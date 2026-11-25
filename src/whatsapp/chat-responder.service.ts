@@ -77,6 +77,7 @@ import {
   createConfirmationCheck,
   createReplyAgent,
   REPLY_RULES,
+  SHORT_REPLY_STYLE,
   type ReplyContext,
 } from './reply-agent';
 import {
@@ -580,6 +581,7 @@ export class ChatResponderService {
         toolbox?.humanHelpPrompt ?? '',
         toolbox?.ownerSendPrompt ?? '',
         isGroupJid(chat.peerJid) ? GROUP_CHAT_NOTE : '',
+        agent.shortReplies === false ? '' : SHORT_REPLY_STYLE,
         REPLY_RULES,
       ]
         .filter(Boolean)

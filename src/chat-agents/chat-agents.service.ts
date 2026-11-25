@@ -158,6 +158,7 @@ export class ChatAgentsService {
           websiteEnabled: req.website?.website_enabled ?? false,
           websiteUrl: req.website?.website_url?.trim() ?? '',
           filesEnabled: req.files?.files_enabled ?? true,
+          shortReplies: req.behavior?.short_replies ?? true,
           humanInterventionDescription: cleanText(
             req.human_intervention?.human_intervention_description ?? '',
           ),
@@ -291,6 +292,9 @@ export class ChatAgentsService {
       }
       if (req.files?.files_enabled !== undefined) {
         data.filesEnabled = req.files.files_enabled;
+      }
+      if (req.behavior?.short_replies !== undefined) {
+        data.shortReplies = req.behavior.short_replies;
       }
       const human = req.human_intervention;
       if (human?.human_intervention_enabled !== undefined) {

@@ -95,6 +95,7 @@ export type ChatAgentInput = {
   media?: { voice_messages_enabled?: boolean; images_enabled?: boolean };
   website?: { website_enabled?: boolean; website_url?: string };
   files?: { files_enabled?: boolean };
+  behavior?: { short_replies?: boolean };
   human_intervention?: {
     human_intervention_enabled?: boolean;
     human_intervention_description?: string;
@@ -128,6 +129,9 @@ export type ChatAgentResource = {
   website: { website_enabled: boolean; website_url: string };
   // Whether the agent sends the owner's uploaded images and files.
   files: { files_enabled: boolean };
+  // How the agent writes: short_replies = a line or two, like a person
+  // texting; off, as long as it judges best.
+  behavior: { short_replies: boolean };
   // When the agent should bring a person in, and the WhatsApp number it tells
   // (from its own number; optional, '' = none). On while enabled and the
   // description is filled in.
@@ -214,6 +218,7 @@ export function toResource(
       website_url: row.websiteUrl,
     },
     files: { files_enabled: row.filesEnabled },
+    behavior: { short_replies: row.shortReplies },
     human_intervention: {
       human_intervention_enabled: row.humanInterventionEnabled,
       human_intervention_description: row.humanInterventionDescription,
@@ -295,6 +300,7 @@ const SECTIONS: Record<
   media: { voice_messages_enabled: 'boolean', images_enabled: 'boolean' },
   website: { website_enabled: 'boolean', website_url: 'string' },
   files: { files_enabled: 'boolean' },
+  behavior: { short_replies: 'boolean' },
   human_intervention: {
     human_intervention_enabled: 'boolean',
     human_intervention_description: 'string',
@@ -386,6 +392,7 @@ export function validateUpdate(req: ChatAgentInput): void {
     req.website?.website_enabled !== undefined ||
     req.website?.website_url !== undefined ||
     req.files?.files_enabled !== undefined ||
+    req.behavior?.short_replies !== undefined ||
     req.human_intervention?.human_intervention_enabled !== undefined ||
     req.human_intervention?.human_intervention_description !== undefined ||
     req.human_intervention?.human_intervention_phone !== undefined ||

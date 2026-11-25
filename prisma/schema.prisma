@@ -91,6 +91,7 @@ model ChatAgent {
   // Images & Files on/off: off, the agent sends none of the owner's uploaded
   // files (src/agent-files). They stay uploaded.
   filesEnabled                 Boolean   @default(true) @map("files_enabled")
+  shortReplies                 Boolean   @default(true) @map("short_replies")
   // The owner's website, which the agent reads while it replies when
   // websiteEnabled is on (src/website/website-reader.ts). Stored as typed.
   websiteUrl                   String    @default("") @map("website_url")
