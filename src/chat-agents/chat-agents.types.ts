@@ -43,6 +43,7 @@ const HOUR_MS = 60 * 60 * 1000;
 export const FREE_TRIAL_REPLIES = 400;
 
 type PlanUser = { noReplyLimitUntil: Date | null; trialEndedAt: Date | null };
+type TrialUser = PlanUser & { aiReplyCount: number };
 
 // A paid plan is users.no_reply_limit_until in the future, set by hand.
 export function onPaidPlan(user: Pick<PlanUser, 'noReplyLimitUntil'>) {
@@ -143,6 +144,9 @@ export type ChatAgentResource = {
   // Read-only. Only present (true) once the account's free trial is used up
   // and it has no paid plan: the agent can't go live.
   free_trial_ended?: boolean;
+  // Read-only. The account's AI replies so far and how many it gets free, for
+  // the dashboard's near-limit note. Absent on a paid plan.
+  free_trial?: { used: number; limit: number };
 };
 
 // What a resource needs beyond the row: attached tools and knowledge bases, in
@@ -160,14 +164,18 @@ export const resourceInclude = {
 } satisfies Prisma.ChatAgentInclude;
 
 function planSelect() {
-  return { noReplyLimitUntil: true, trialEndedAt: true } as const;
+  return {
+    noReplyLimitUntil: true,
+    trialEndedAt: true,
+    aiReplyCount: true,
+  } as const;
 }
 
 export function toResource(
   row: ChatAgent & {
     knowledgeBases: { knowledgeBaseId: string }[];
     tools: { toolId: string; tool: { key: string | null } }[];
-    user: PlanUser;
+    user: TrialUser;
   },
 ): ChatAgentResource {
   return {
@@ -232,7 +240,7 @@ export function toLiveState(
   row: Pick<
     ChatAgent,
     'id' | 'status' | 'hourlyReplyCount' | 'hourlyWindowStartedAt'
-  > & { user: PlanUser },
+  > & { user: TrialUser },
 ) {
   return {
     id: row.id,
@@ -242,8 +250,12 @@ export function toLiveState(
   };
 }
 
-function trialState(user: PlanUser) {
-  return freeTrialEnded(user) ? { free_trial_ended: true } : {};
+function trialState(user: TrialUser) {
+  if (onPaidPlan(user)) return {};
+  return {
+    ...(freeTrialEnded(user) ? { free_trial_ended: true } : {}),
+    free_trial: { used: user.aiReplyCount, limit: FREE_TRIAL_REPLIES },
+  };
 }
 
 function hourlyLimit(

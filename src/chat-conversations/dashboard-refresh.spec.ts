@@ -10,7 +10,10 @@ import { AgentFilesService } from '../agent-files/agent-files.service';
 import { ClerkAuthGuard } from '../auth/auth.guard';
 import { ChatAgentsController } from '../chat-agents/chat-agents.controller';
 import { ChatAgentsService } from '../chat-agents/chat-agents.service';
-import { HOURLY_LIMITS_ON } from '../chat-agents/chat-agents.types';
+import {
+  FREE_TRIAL_REPLIES,
+  HOURLY_LIMITS_ON,
+} from '../chat-agents/chat-agents.types';
 import { PrismaClient } from '../generated/prisma/client';
 import { OrdersController } from '../orders/orders.controller';
 import { OrdersService } from '../orders/orders.service';
@@ -361,9 +364,15 @@ describe("an agent's live state", () => {
     ((await http().get(`${AGENTS}/live`).expect(200)).body as { data: Live[] })
       .data;
 
-  it('is only the id and status while the agent is under its limit', async () => {
+  it('is only the id, status and trial use while the agent is under its limit', async () => {
     const { agentId } = await account();
-    expect(await live()).toEqual([{ id: agentId, status: 'active' }]);
+    expect(await live()).toEqual([
+      {
+        id: agentId,
+        status: 'active',
+        free_trial: { used: 0, limit: FREE_TRIAL_REPLIES },
+      },
+    ]);
   });
 
   (HOURLY_LIMITS_ON ? it : it.skip)(

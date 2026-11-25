@@ -568,7 +568,11 @@ describe('messages in a group', () => {
           ...agent,
           knowledgeBases: [],
           tools: [],
-          user: { noReplyLimitUntil: null, trialEndedAt: null },
+          user: {
+            noReplyLimitUntil: null,
+            trialEndedAt: null,
+            aiReplyCount: 0,
+          },
         }).hourly_limit_resets_at,
       ).toBeUndefined();
     },
@@ -613,7 +617,11 @@ describe('messages in a group', () => {
           ...(await agentOn(id)),
           knowledgeBases: [],
           tools: [],
-          user: { noReplyLimitUntil: null, trialEndedAt: null },
+          user: {
+            noReplyLimitUntil: null,
+            trialEndedAt: null,
+            aiReplyCount: 0,
+          },
         });
       expect((await resource()).hourly_limit_resets_at).toBeUndefined();
 
@@ -643,7 +651,11 @@ describe('messages in a group', () => {
           hourlyWindowStartedAt: new Date(Date.now() - 61 * 60 * 1000),
           knowledgeBases: [],
           tools: [],
-          user: { noReplyLimitUntil: null, trialEndedAt: null },
+          user: {
+            noReplyLimitUntil: null,
+            trialEndedAt: null,
+            aiReplyCount: 0,
+          },
         }).hourly_limit_resets_at,
       ).toBeUndefined();
       incoming(sock, contact, { conversation: 'back on' });
@@ -895,9 +907,9 @@ describe('the free trial', () => {
     expect((await userOf(userId)).aiReplyCount).toBe(100);
     const agent = await agentOn(id);
     expect(agent.status).toBe('active');
-    expect((await agents().get(userId, agent.id)).free_trial_ended).toBe(
-      undefined,
-    );
+    const resource = await agents().get(userId, agent.id);
+    expect(resource.free_trial_ended).toBe(undefined);
+    expect(resource.free_trial).toBe(undefined);
   });
 
   it('hands the reply back when none goes out', async () => {
@@ -909,6 +921,19 @@ describe('the free trial', () => {
     await new Promise((resolve) => setTimeout(resolve, 3_000));
     failing.mockRestore();
     expect((await userOf(userId)).aiReplyCount).toBe(0);
+  });
+
+  it('tells the dashboard how much of the trial is used', async () => {
+    const { userId, id } = await linkedNumber();
+    await prisma.user.update({
+      where: { id: userId },
+      data: { aiReplyCount: 350 },
+    });
+    const agent = await agentOn(id);
+    const free_trial = { used: 350, limit: FREE_TRIAL_REPLIES };
+    expect(await agents().get(userId, agent.id)).toMatchObject({ free_trial });
+    const [live] = await agents().liveStates(userId);
+    expect(live).toMatchObject({ free_trial });
   });
 
   it("keeps the agent off when it's switched on, and says why", async () => {
