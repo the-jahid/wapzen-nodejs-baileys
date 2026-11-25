@@ -57,7 +57,7 @@ export function freeTrialEnded(user: PlanUser) {
 
 // The prompt is resent with every reply, so its length is capped (Go
 // MaxSystemPromptChars). Counted in code points after trimming, as stored.
-export const MAX_SYSTEM_PROMPT_CHARS = 8000;
+export const MAX_SYSTEM_PROMPT_CHARS = 9000;
 // Sent with every reply too, while ordering is on.
 export const MAX_ORDER_INSTRUCTIONS_CHARS = 4000;
 // A website address is stored as typed: the dashboard saves while the owner is
