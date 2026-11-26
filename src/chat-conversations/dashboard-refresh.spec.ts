@@ -13,6 +13,7 @@ import { ChatAgentsService } from '../chat-agents/chat-agents.service';
 import {
   FREE_TRIAL_REPLIES,
   HOURLY_LIMITS_ON,
+  HOURLY_REPLY_LIMIT,
 } from '../chat-agents/chat-agents.types';
 import { PrismaClient } from '../generated/prisma/client';
 import { OrdersController } from '../orders/orders.controller';
@@ -382,7 +383,10 @@ describe("an agent's live state", () => {
       const started = new Date(Date.now() - HOUR / 2);
       await prisma.chatAgent.update({
         where: { id: agentId },
-        data: { hourlyReplyCount: 50, hourlyWindowStartedAt: started },
+        data: {
+          hourlyReplyCount: HOURLY_REPLY_LIMIT,
+          hourlyWindowStartedAt: started,
+        },
       });
       expect(await live()).toEqual([
         {
@@ -391,6 +395,7 @@ describe("an agent's live state", () => {
           hourly_limit_resets_at: new Date(
             started.getTime() + HOUR,
           ).toISOString(),
+          free_trial: { used: 0, limit: FREE_TRIAL_REPLIES },
         },
       ]);
     },
@@ -409,7 +414,10 @@ describe("an agent's live state", () => {
 
       await prisma.chatAgent.update({
         where: { id: agentId },
-        data: { hourlyReplyCount: 50, hourlyWindowStartedAt: new Date() },
+        data: {
+          hourlyReplyCount: HOURLY_REPLY_LIMIT,
+          hourlyWindowStartedAt: new Date(),
+        },
       });
       expect((await live())[0].hourly_limit_resets_at).toBe(await full());
       expect(await full()).toBeDefined();

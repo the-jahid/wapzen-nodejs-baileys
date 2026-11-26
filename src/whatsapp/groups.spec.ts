@@ -11,6 +11,7 @@ import { ChatAgentsService } from '../chat-agents/chat-agents.service';
 import {
   FREE_TRIAL_REPLIES,
   HOURLY_LIMITS_ON,
+  HOURLY_REPLY_LIMIT,
   toResource,
 } from '../chat-agents/chat-agents.types';
 import { ChatConversationsService } from '../chat-conversations/chat-conversations.service';
@@ -247,6 +248,14 @@ function spendGroupHour(id: string, count: number, minutesAgo = 0) {
 // The hourly limits are switched off (HOURLY_LIMITS_ON); their tests run again
 // when they're switched back on.
 const limitIt = HOURLY_LIMITS_ON ? it : it.skip;
+
+// Waits (up to 10s) for something that happens after a reply has finished.
+async function until(done: () => Promise<boolean>) {
+  for (const stop = Date.now() + 10_000; Date.now() < stop;) {
+    if (await done()) return;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+}
 
 // The HTTP status a call fails with, or 0 if it doesn't.
 function statusOf(call: Promise<unknown>) {
@@ -604,13 +613,14 @@ describe('messages in a group', () => {
   );
 
   limitIt(
-    'sends the 50th private reply, then pauses with a timer until the hour is up',
+    'sends the last reply of the hour, then pauses with a timer until the hour is up',
     async () => {
       const { id, sock } = await linkedNumber();
       const contact = '8801711111111@s.whatsapp.net';
       await prisma.$executeRaw`
       UPDATE chat_agents SET
-        hourly_reply_count = 49, hourly_window_started_at = now()
+        hourly_reply_count = ${HOURLY_REPLY_LIMIT - 1}::int,
+        hourly_window_started_at = now()
       WHERE phone_number_id = ${id}`;
       const resource = async () =>
         toResource({
@@ -625,10 +635,10 @@ describe('messages in a group', () => {
         });
       expect((await resource()).hourly_limit_resets_at).toBeUndefined();
 
-      incoming(sock, contact, { conversation: 'number 50' });
+      incoming(sock, contact, { conversation: 'the last one' });
       await repliesOn(sock);
       const atLimit = await agentOn(id);
-      expect(atLimit.hourlyReplyCount).toBe(50);
+      expect(atLimit.hourlyReplyCount).toBe(HOURLY_REPLY_LIMIT);
       expect(atLimit.status).toBe('active');
       expect((await resource()).hourly_limit_resets_at).toBe(
         new Date(
@@ -636,10 +646,10 @@ describe('messages in a group', () => {
         ).toISOString(),
       );
 
-      incoming(sock, contact, { conversation: 'number 51' });
+      incoming(sock, contact, { conversation: 'one too many' });
       await new Promise((resolve) => setTimeout(resolve, 3_000));
       expect(sock.sent).toHaveLength(1);
-      expect((await agentOn(id)).hourlyReplyCount).toBe(50);
+      expect((await agentOn(id)).hourlyReplyCount).toBe(HOURLY_REPLY_LIMIT);
 
       await prisma.$executeRaw`
       UPDATE chat_agents SET hourly_window_started_at = now() - interval '61 minutes'
@@ -725,7 +735,8 @@ describe('messages in a group', () => {
     await whatsapp.setGroupAi(userId, id, GROUP, true);
     await prisma.$executeRaw`
       UPDATE chat_agents SET
-        hourly_reply_count = 50, hourly_window_started_at = now()
+        hourly_reply_count = ${HOURLY_REPLY_LIMIT}::int,
+        hourly_window_started_at = now()
       WHERE phone_number_id = ${id}`;
     incoming(sock, GROUP, tagged('@8801700000000 hi'));
     await new Promise((resolve) => setTimeout(resolve, 3_000));
@@ -733,27 +744,32 @@ describe('messages in a group', () => {
     expect((await agentOn(id)).groupHourlyReplyCount).toBe(0);
   });
 
-  limitIt('ignores both limits while the account is let off them', async () => {
+  limitIt('holds a paid account to the hourly limit too', async () => {
     const { userId, id, sock } = await linkedNumber();
-    await whatsapp.setGroupAi(userId, id, GROUP, true);
     await prisma.user.update({
       where: { id: userId },
       data: { noReplyLimitUntil: new Date(Date.now() + 24 * 60 * 60 * 1000) },
     });
     await prisma.$executeRaw`
       UPDATE chat_agents SET
-        hourly_reply_count = 50, hourly_window_started_at = now(),
-        group_hourly_reply_count = 50, group_hourly_window_started_at = now()
+        hourly_reply_count = ${HOURLY_REPLY_LIMIT}::int,
+        hourly_window_started_at = now()
       WHERE phone_number_id = ${id}`;
-    incoming(sock, GROUP, tagged('@8801700000000 hi'));
-    await repliesOn(sock);
     incoming(sock, '8801711111111@s.whatsapp.net', { conversation: 'hello' });
-    await repliesOn(sock, 2);
-    expect(sock.sent).toHaveLength(2);
-    // Not counted, so the counts never pass the limit.
-    const agent = await agentOn(id);
-    expect(agent.hourlyReplyCount).toBe(50);
-    expect(agent.groupHourlyReplyCount).toBe(50);
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    expect(sock.sent).toEqual([]);
+    expect((await agentOn(id)).hourlyReplyCount).toBe(HOURLY_REPLY_LIMIT);
+  });
+
+  limitIt('counts a paid account toward the hour', async () => {
+    const { userId, id, sock } = await linkedNumber();
+    await prisma.user.update({
+      where: { id: userId },
+      data: { noReplyLimitUntil: new Date(Date.now() + 24 * 60 * 60 * 1000) },
+    });
+    incoming(sock, '8801711111111@s.whatsapp.net', { conversation: 'hello' });
+    await repliesOn(sock);
+    expect((await agentOn(id)).hourlyReplyCount).toBe(1);
   });
 
   limitIt('keeps the limits once the exemption has ended', async () => {
@@ -764,7 +780,8 @@ describe('messages in a group', () => {
     });
     await prisma.$executeRaw`
       UPDATE chat_agents SET
-        hourly_reply_count = 50, hourly_window_started_at = now()
+        hourly_reply_count = ${HOURLY_REPLY_LIMIT}::int,
+        hourly_window_started_at = now()
       WHERE phone_number_id = ${id}`;
     incoming(sock, '8801711111111@s.whatsapp.net', { conversation: 'hello' });
     await new Promise((resolve) => setTimeout(resolve, 3_000));
@@ -780,7 +797,8 @@ describe('messages in a group', () => {
         .spyOn(sock, 'sendMessage' as never)
         .mockRejectedValue(new Error('offline') as never);
       incoming(sock, GROUP, tagged('@8801700000000 hi'));
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      // The failed send is noticed late, so wait for the reply to be handed back.
+      await until(async () => (await agentOn(id)).hourlyReplyCount === 0);
       failing.mockRestore();
       const agent = await agentOn(id);
       expect(agent.hourlyReplyCount).toBe(0);
@@ -918,7 +936,8 @@ describe('the free trial', () => {
       .spyOn(sock, 'sendMessage' as never)
       .mockRejectedValue(new Error('offline') as never);
     incoming(sock, CONTACT, { conversation: 'hello' });
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    // The failed send is noticed late, so wait for the reply to be handed back.
+    await until(async () => (await userOf(userId)).aiReplyCount === 0);
     failing.mockRestore();
     expect((await userOf(userId)).aiReplyCount).toBe(0);
   });

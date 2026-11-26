@@ -20,9 +20,9 @@ model User {
   username          String?
   // An operator can block an account; setting this back to null unblocks it.
   blockedAt         DateTime? @map("blocked_at") @db.Timestamptz
-  // Until this time the account's agents skip the hourly AI reply limits
-  // (HOURLY_REPLY_LIMIT and GROUP_HOURLY_REPLY_LIMIT). Set by hand for a
-  // single account; null, or a time in the past, means the normal limits.
+  // Until this time the account is on a paid plan (set by hand): its replies
+  // aren't counted toward the free trial. The hourly AI reply limits
+  // (HOURLY_REPLY_LIMIT, GROUP_HOURLY_REPLY_LIMIT) still apply (2026-11-27).
   noReplyLimitUntil DateTime? @map("no_reply_limit_until") @db.Timestamptz
   // Chat agents this account may hold; null means MAX_CHAT_AGENTS_PER_USER.
   maxChatAgents     Int?      @map("max_chat_agents")

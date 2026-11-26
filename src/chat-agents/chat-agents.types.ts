@@ -32,16 +32,17 @@ export const MAX_CHAT_AGENTS_PER_USER = 1;
 // stored status isn't touched, so nothing has to switch it back on, and the
 // owner's own pause isn't confused with it. While the limit is reached the
 // dashboard shows the agent as paused with a timer (hourly_limit_resets_at).
-export const HOURLY_REPLY_LIMIT = 50;
+// Every account has it, paid plans included (2026-11-27).
+export const HOURLY_REPLY_LIMIT = 100;
 // Group replies count toward that limit too, and may use all of it. This one
 // has an hour of its own, so it can still run out after the overall hour has
 // restarted; the agent then goes quiet in groups only and keeps answering
 // private chats, so the dashboard isn't told it has stopped.
 export const GROUP_HOURLY_REPLY_LIMIT = 50;
-// Both hourly limits are off for every account (2026-11-12): replies aren't
-// counted, nothing is refused and no agent shows as paused. Set true to bring
-// them back as described above.
-export const HOURLY_LIMITS_ON = false;
+// Both hourly limits are on for every account (off 2026-11-12, back on at 100
+// on 2026-11-27). False stops the counting: nothing is refused and no agent
+// shows as paused.
+export const HOURLY_LIMITS_ON = true;
 const HOUR_MS = 60 * 60 * 1000;
 
 // A free account's AI replies in all, across its agents. When they're used up

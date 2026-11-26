@@ -778,7 +778,7 @@ export class ChatResponderService {
   // counted in one and refused by the other. False at either limit.
   private async claimReply(agent: ReplyQuotaAgent, inGroup: boolean) {
     // Not counted at all, so the dashboard never shows the agent paused.
-    if (!HOURLY_LIMITS_ON || noReplyLimit(agent)) return true;
+    if (!HOURLY_LIMITS_ON) return true;
     try {
       const [claimed] = await this.prisma.$queryRaw<
         { count: number; group_count: number }[]
@@ -836,7 +836,7 @@ export class ChatResponderService {
 
   // Hands back a reply claimed for a message that got no answer.
   private async releaseReply(agent: ReplyQuotaAgent, inGroup: boolean) {
-    if (!HOURLY_LIMITS_ON || noReplyLimit(agent)) return;
+    if (!HOURLY_LIMITS_ON) return;
     await this.prisma.chatAgent
       .updateMany({
         where: {
@@ -1355,13 +1355,6 @@ export class ChatResponderService {
       return { rows: [] };
     }
   }
-}
-
-// Whether the agent's account is let off the hourly reply limits right now
-// (users.no_reply_limit_until, set by hand). Checked again on release, so a
-// reply that wasn't counted is never handed back.
-function noReplyLimit(agent: ReplyQuotaAgent): boolean {
-  return onPaidPlan(agent.user);
 }
 
 // How long a reply waits for the home page before starting without it. The
