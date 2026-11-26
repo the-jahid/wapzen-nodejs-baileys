@@ -1,9 +1,17 @@
-import { HumanMessage } from '@langchain/core/messages';
+import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { ChatAnthropic } from '@langchain/anthropic';
+import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { BaseCheckpointSaver } from '@langchain/langgraph';
-import { createAgent, toolCallLimitMiddleware } from 'langchain';
-import { DEFAULT_MODEL } from '../chat-agents/chat-agents.types';
+import {
+  createAgent,
+  createMiddleware,
+  toolCallLimitMiddleware,
+} from 'langchain';
+import {
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_MODEL,
+} from '../chat-agents/chat-agents.types';
 import { chatSummary, chatTranscript } from '../chat-memory/memory.middleware';
 import {
   cachedSystem,
@@ -140,6 +148,48 @@ export type ReplyModels = Record<
   BaseChatModel
 >;
 
+// Gemini, for the chat agents whose row says provider "google" (set by hand in
+// the database, 2026-11-27: a cheaper model for one very busy paid account).
+// Everyone else stays on Claude. Thinking at LOW keeps it cheap and quick.
+export function geminiModel(
+  apiKey: string,
+  maxTokens: number,
+  model = DEFAULT_GEMINI_MODEL,
+) {
+  return new ChatGoogleGenerativeAI({
+    model,
+    apiKey,
+    maxOutputTokens: maxTokens,
+    maxRetries: 1,
+    thinkingConfig: { thinkingLevel: 'LOW' },
+  });
+}
+
+export const geminiReplyModels = (
+  apiKey: string,
+  model = DEFAULT_GEMINI_MODEL,
+): ReplyModels => ({
+  reply: geminiModel(apiKey, REPLY_MAX_TOKENS, model),
+  summary: geminiModel(apiKey, SUMMARY_MAX_TOKENS, model),
+  selection: geminiModel(apiKey, SELECTION_MAX_TOKENS, model),
+});
+
+// Gemini takes a system message only as the very first one; the turn notes
+// replyPrompt puts right after the customer's message go in as a user message
+// instead. Claude's cache marks on text blocks are simply ignored by Gemini.
+const geminiMessages = createMiddleware({
+  name: 'GeminiMessages',
+  wrapModelCall: (request, handler) =>
+    handler({
+      ...request,
+      messages: request.messages.map((m) =>
+        SystemMessage.isInstance(m)
+          ? new HumanMessage({ id: m.id, content: m.content })
+          : m,
+      ),
+    }),
+});
+
 // The agent every chat is answered by, made of middleware: its memory of the
 // chat (with a checkpointer, one saved thread per chat; see memory.middleware),
 // the summary of what is too old to keep word for word, the prompt, the tools
@@ -155,6 +205,7 @@ export function createReplyAgent(
     summary: chatModel(apiKey, SUMMARY_MAX_TOKENS),
     selection: chatModel(apiKey, SELECTION_MAX_TOKENS),
   },
+  gemini = false,
 ) {
   return createAgent({
     model: models.reply,
@@ -173,6 +224,7 @@ export function createReplyAgent(
       }),
       replyPrompt,
       toolSelection(models.selection),
+      ...(gemini ? [geminiMessages] : []),
       toolRunner,
       toolCallLimitMiddleware({ runLimit: MAX_TOOL_CALLS }),
     ],

@@ -8,6 +8,7 @@ import { AgentFilesService } from '../agent-files/agent-files.service';
 import type { OutgoingFile } from '../agent-files/agent-files.types';
 import {
   FREE_TRIAL_REPLIES,
+  GEMINI_MODEL_PREFIX,
   GROUP_HOURLY_REPLY_LIMIT,
   HOURLY_LIMITS_ON,
   HOURLY_REPLY_LIMIT,
@@ -76,6 +77,7 @@ import {
   CHAT_TRANSCRIPT_MESSAGES,
   createConfirmationCheck,
   createReplyAgent,
+  geminiReplyModels,
   REPLY_RULES,
   SHORT_REPLY_STYLE,
   type ReplyContext,
@@ -192,6 +194,16 @@ export class ChatResponderService {
   private agent?: ReturnType<typeof createReplyAgent>;
   private agentSaver?: ChatMemoryService['saver'];
   private memorylessAgent?: ReturnType<typeof createReplyAgent>;
+  // Agents set to Gemini in the database, by model and by whether they keep a
+  // memory (made again if the store changes, like `agent`).
+  private readonly geminiAgents = new Map<
+    string,
+    {
+      saver: ChatMemoryService['saver'] | undefined;
+      agent: ReturnType<typeof createReplyAgent>;
+    }
+  >();
+  private geminiKeyWarned = false;
   private confirmationCheck?: ReturnType<typeof createConfirmationCheck>;
   private languageGuard?: ReturnType<typeof createLanguageGuard>;
 
@@ -1241,19 +1253,20 @@ export class ChatResponderService {
     context: ReplyContext,
   ) {
     const saver = this.memory?.saver;
+    const gemini = this.geminiFor(agent);
     if (!saver || !conversationId) {
-      this.memorylessAgent ??= createReplyAgent(apiKey);
-      const result = await this.memorylessAgent.invoke(
-        { messages },
-        { context },
-      );
+      const memoryless = gemini
+        ? this.geminiAgent(gemini, undefined)
+        : (this.memorylessAgent ??= createReplyAgent(apiKey));
+      const result = await memoryless.invoke({ messages }, { context });
       return result.reply;
     }
-    if (!this.agent || this.agentSaver !== saver) {
+    if (!gemini && (!this.agent || this.agentSaver !== saver)) {
       this.agent = createReplyAgent(apiKey, saver);
       this.agentSaver = saver;
     }
-    const result = await this.agent.invoke(
+    const replier = gemini ? this.geminiAgent(gemini, saver) : this.agent!;
+    const result = await replier.invoke(
       { messages },
       {
         configurable: { thread_id: threadIdFor(conversationId, agent.id) },
@@ -1281,6 +1294,43 @@ export class ChatResponderService {
       },
     );
     return result.reply;
+  }
+
+  // The Gemini key and model when this agent's row names a Gemini model;
+  // undefined for every other agent, or when GEMINI_API_KEY isn't set (then it
+  // answers on Claude like the rest, and says so once).
+  private geminiFor(agent: ReplyingAgent) {
+    const model = agent.modelName?.trim();
+    if (!model?.startsWith(GEMINI_MODEL_PREFIX)) return undefined;
+    const key = this.config.get<string>('GEMINI_API_KEY')?.trim();
+    if (!key) {
+      if (!this.geminiKeyWarned) {
+        this.logger.warn(
+          `GEMINI_API_KEY is not set; chat agent ${agent.id} asks for Gemini and replies with Claude`,
+        );
+        this.geminiKeyWarned = true;
+      }
+      return undefined;
+    }
+    return { key, model };
+  }
+
+  // One Gemini reply agent per model and store, made on first use.
+  private geminiAgent(
+    { key, model }: { key: string; model: string },
+    saver: ChatMemoryService['saver'] | undefined,
+  ) {
+    const slot = `${model}:${saver ? 'memory' : 'none'}`;
+    const cached = this.geminiAgents.get(slot);
+    if (cached && cached.saver === saver) return cached.agent;
+    const agent = createReplyAgent(
+      key,
+      saver,
+      geminiReplyModels(key, model),
+      true,
+    );
+    this.geminiAgents.set(slot, { saver, agent });
+    return agent;
   }
 
   // The chat so far, as saved: only this agent's own, so an agent newly put on a

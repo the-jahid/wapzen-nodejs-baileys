@@ -11,6 +11,13 @@ import { cleanText } from '../orders/orders.types';
 export const DEFAULT_STATUS = 'inactive';
 export const DEFAULT_PROVIDER = 'anthropic';
 export const DEFAULT_MODEL = 'claude-haiku-5-5';
+// The one exception, set only by hand in the database: an agent whose
+// model_name starts with GEMINI_MODEL_PREFIX replies with that Gemini model
+// (model_provider stays as it is: its check constraint allows only openai and
+// anthropic). The API still refuses any model but the default, and the
+// dashboard never sends one, so a save never undoes it.
+export const GEMINI_MODEL_PREFIX = 'gemini-';
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 export const DEFAULT_TEMPERATURE = 0.3;
 export const DEFAULT_SYSTEM_PROMPT =
   'You are a helpful, friendly WhatsApp chat assistant.';
