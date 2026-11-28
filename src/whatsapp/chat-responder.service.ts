@@ -34,6 +34,7 @@ import {
   CHAT_KNOWLEDGE_TOP_K,
   chatKnowledgePrompt,
   chatKnowledgeQuery,
+  KNOWLEDGE_INSTRUCTIONS,
 } from '../knowledge-bases/chat-knowledge';
 import { IndexerService } from '../knowledge-bases/indexer.service';
 import {
@@ -89,6 +90,7 @@ import {
   ownerSendNotice,
 } from './owner-send';
 import { createLanguageGuard } from './reply-language';
+import { createLeakGuard, type ReplySource } from './reply-leak';
 import { toWhatsAppFormat } from './whatsapp-format';
 
 // People often send one thought as several quick messages. Each waits this
@@ -126,7 +128,10 @@ type ReplyingAgent = ChatAgent & {
   user: { email: string; noReplyLimitUntil: Date | null };
 };
 
-type ReplyQuotaAgent = Pick<ReplyingAgent, 'id' | 'userId' | 'agentName' | 'phoneNumber' | 'user'>;
+type ReplyQuotaAgent = Pick<
+  ReplyingAgent,
+  'id' | 'userId' | 'agentName' | 'phoneNumber' | 'user'
+>;
 
 export type IncomingChat = {
   phoneNumberId: string;
@@ -206,6 +211,7 @@ export class ChatResponderService {
   private geminiKeyWarned = false;
   private confirmationCheck?: ReturnType<typeof createConfirmationCheck>;
   private languageGuard?: ReturnType<typeof createLanguageGuard>;
+  private leakGuard?: ReturnType<typeof createLeakGuard>;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -599,13 +605,11 @@ export class ChatResponderService {
         .filter(Boolean)
         .join('\n\n');
       const now = new Date();
-      const turnNotes = [
+      const timeNotes = [
         dateContext(now, zoneForPhone(agent.phoneNumber?.phoneNumber)),
         gapNote(transcript.rows.at(-1)?.at, now),
-        knowledge,
-      ]
-        .filter(Boolean)
-        .join('\n\n');
+      ];
+      const turnNotes = [...timeNotes, knowledge].filter(Boolean).join('\n\n');
       // Photos go to the model only with the message they came in; history
       // keeps the 📷 line, not the image.
       const incoming = new HumanMessage({
@@ -640,12 +644,32 @@ export class ChatResponderService {
       );
       // An order must never be placed in silence.
       const orderNumber = await toolbox?.placedOrderNumber();
+      // The model's own working text never reaches the customer. This comes
+      // before the language check, which would otherwise translate it.
+      const draft = await this.withoutNotes(
+        apiKey,
+        agent,
+        toolbox?.withoutFileMarks(generated) ?? generated,
+        {
+          customerText: chat.text,
+          ownText: [
+            REPLY_RULES,
+            SHORT_REPLY_STYLE,
+            KNOWLEDGE_INSTRUCTIONS,
+            ...timeNotes,
+          ].join('\n'),
+          ownerPrompt: [agent.systemPrompt, agent.orderInstructions].join(
+            '\n\n',
+          ),
+          toolNames:
+            toolbox?.definitions().map((tool) => tool.function.name) ?? [],
+        },
+      );
       const reply = toWhatsAppFormat(
         await this.inOwnerLanguage(
           apiKey,
           agent,
-          (toolbox?.withoutFileMarks(generated) ?? generated) ||
-            (orderNumber ? `Your order #${orderNumber} is placed.` : ''),
+          draft || (orderNumber ? `Your order #${orderNumber} is placed.` : ''),
           await language,
         ),
       );
@@ -1152,6 +1176,38 @@ export class ChatResponderService {
         `reading chat agent ${agent.id}'s reply language failed: ${(err as Error).message}`,
       );
       return '';
+    }
+  }
+
+  // The reply without the model's working text (reply-leak.ts). A reply that
+  // was nothing but that, or the owner's prompt itself, comes back empty and
+  // isn't sent. A failed check sends the reply as it was. Each reply changed
+  // goes in the activity log, so the owner's report can be checked.
+  private async withoutNotes(
+    apiKey: string,
+    agent: ReplyingAgent,
+    reply: string,
+    source: ReplySource,
+  ) {
+    if (!reply.trim()) return reply;
+    try {
+      this.leakGuard ??= createLeakGuard(apiKey);
+      const checked = await this.leakGuard(reply, source);
+      if (checked.removed === 'unchecked') {
+        this.logger.warn(
+          `checking chat agent ${agent.id}'s reply for working text failed, sent as it was: ${checked.error}`,
+        );
+      } else if (checked.removed) {
+        activity(
+          `AI reply ${checked.removed === 'withheld' ? 'withheld' : 'cleaned'}, it held the model's working text: ${agent.user.email} - ${agent.agentName} on ${agent.phoneNumber?.phoneNumber}`,
+        );
+      }
+      return checked.text;
+    } catch (err) {
+      this.logger.warn(
+        `checking chat agent ${agent.id}'s reply for working text failed, sent as it was: ${(err as Error).message}`,
+      );
+      return reply;
     }
   }
 

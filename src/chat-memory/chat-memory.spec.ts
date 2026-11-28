@@ -585,8 +585,17 @@ describe('the tools of a reply', () => {
       toolbox,
     });
     expect(runOf(toolbox)).toHaveBeenCalledWith('tool_0', {});
-    expect(reply).toBe('Let me look.\n\nIt is 5 pm.');
+    // What the model said alongside the call isn't sent: only the answer.
+    expect(reply).toBe('It is 5 pm.');
     expect((await stateOf(app, thread)).messages).toHaveLength(2);
+  });
+
+  it('send what was said with a call when the answer after it is empty', async () => {
+    const app = boot({ replies: [calls('tool_0'), ''] });
+    const { reply } = await answer(app, newThread(), rowsOf(2), 'when?', {
+      toolbox: box(names(1)),
+    });
+    expect(reply).toBe('Let me look.');
   });
 
   it('are all offered when they are few, without asking which', async () => {
