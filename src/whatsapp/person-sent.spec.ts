@@ -8,8 +8,10 @@ import { ChatResponderService } from './chat-responder.service';
 // Only what personSent touches is real; these modules don't load under Jest.
 // No language set: the reply language guard never rewrites here.
 jest.mock('./reply-language', () => ({
+  ...jest.requireActual<object>('./reply-language'),
   createLanguageGuard: () => ({
     languageOf: () => Promise.resolve(''),
+    customerLanguageOf: () => Promise.resolve(''),
     inLanguage: (text: string) => Promise.resolve({ text, rewritten: false }),
   }),
 }));

@@ -22,8 +22,10 @@ import type { WhatsAppService } from './whatsapp.service';
 
 const modelCalls: BaseMessage[][] = [];
 jest.mock('./reply-language', () => ({
+  ...jest.requireActual<object>('./reply-language'),
   createLanguageGuard: () => ({
     languageOf: () => Promise.resolve(''),
+    customerLanguageOf: () => Promise.resolve(''),
     inLanguage: (text: string) => Promise.resolve({ text, rewritten: false }),
   }),
 }));

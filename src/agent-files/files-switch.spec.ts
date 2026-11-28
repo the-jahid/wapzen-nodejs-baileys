@@ -19,8 +19,10 @@ jest.mock('../orders/orders.service', () => ({ OrdersService: class {} }));
 jest.mock('../activity/activity');
 // No language set: the reply language guard never rewrites here.
 jest.mock('../whatsapp/reply-language', () => ({
+  ...jest.requireActual<object>('../whatsapp/reply-language'),
   createLanguageGuard: () => ({
     languageOf: () => Promise.resolve(''),
+    customerLanguageOf: () => Promise.resolve(''),
     inLanguage: (text: string) => Promise.resolve({ text, rewritten: false }),
   }),
 }));

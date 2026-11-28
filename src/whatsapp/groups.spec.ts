@@ -96,8 +96,10 @@ jest.mock('./auth-state', () => ({
 const modelCalls: { prompt: string; messages: BaseMessage[] }[] = [];
 // No language set: the reply language guard never rewrites here.
 jest.mock('./reply-language', () => ({
+  ...jest.requireActual<object>('./reply-language'),
   createLanguageGuard: () => ({
     languageOf: () => Promise.resolve(''),
+    customerLanguageOf: () => Promise.resolve(''),
     inLanguage: (text: string) => Promise.resolve({ text, rewritten: false }),
   }),
 }));

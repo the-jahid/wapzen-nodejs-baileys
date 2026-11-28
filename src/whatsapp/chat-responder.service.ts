@@ -89,7 +89,12 @@ import {
   detailsKey,
   ownerSendNotice,
 } from './owner-send';
-import { createLanguageGuard } from './reply-language';
+import {
+  checkedLanguage,
+  createLanguageGuard,
+  languageNote,
+  languageSample,
+} from './reply-language';
 import { createLeakGuard, type ReplySource } from './reply-leak';
 import { toWhatsAppFormat } from './whatsapp-format';
 
@@ -567,12 +572,18 @@ export class ChatResponderService {
         humanHelp,
         ownerSends,
       );
-      // The language the owner set, read from the prompt once and remembered:
-      // it runs alongside everything up to the reply, so it adds no wait.
-      const language = this.replyLanguage(apiKey, agent);
-      // Both ask a different service before the reply can start, so they run
+      // The language the owner set, read from the prompt once and remembered,
+      // and when they set none, the language the customer writes in. Named in
+      // the turn notes, or a prompt written in one language (Portuguese) gets
+      // every reply in it.
+      const sample = languageSample(chat.text, transcript.rows);
+      // Side by side, so neither waits for the other; the customer's is only
+      // used when the owner set none.
+      const ownerLanguage = this.replyLanguage(apiKey, agent);
+      const customerLanguage = this.customerLanguage(apiKey, agent, sample);
+      // These ask a different service before the reply can start, so they run
       // together.
-      const [knowledge, check] = await Promise.all([
+      const [knowledge, check, language, writtenIn] = await Promise.all([
         this.knowledgeFor(agent, transcript, chat.text),
         !!toolbox?.takesOrders &&
           this.orderConfirmed(
@@ -582,6 +593,8 @@ export class ChatResponderService {
             agent,
             toolbox.orderFields,
           ),
+        ownerLanguage,
+        customerLanguage,
       ]);
       // What the owner set up: the agent's prompt, their order instructions
       // with order taking on, and passages from attached knowledge bases. The
@@ -608,6 +621,7 @@ export class ChatResponderService {
       const timeNotes = [
         dateContext(now, zoneForPhone(agent.phoneNumber?.phoneNumber)),
         gapNote(transcript.rows.at(-1)?.at, now),
+        languageNote(language, writtenIn),
       ];
       const turnNotes = [...timeNotes, knowledge].filter(Boolean).join('\n\n');
       // Photos go to the model only with the message they came in; history
@@ -670,7 +684,7 @@ export class ChatResponderService {
           apiKey,
           agent,
           draft || (orderNumber ? `Your order #${orderNumber} is placed.` : ''),
-          await language,
+          checkedLanguage(language, writtenIn, sample),
         ),
       );
       const sentFiles = toolbox?.sentFiles ?? [];
@@ -1174,6 +1188,24 @@ export class ChatResponderService {
     } catch (err) {
       this.logger.warn(
         `reading chat agent ${agent.id}'s reply language failed: ${(err as Error).message}`,
+      );
+      return '';
+    }
+  }
+
+  // The language the customer's text is written in, or '' when it can't be
+  // told or the lookup failed: a failed lookup must never stop a reply.
+  private async customerLanguage(
+    apiKey: string,
+    agent: ReplyingAgent,
+    text: string,
+  ) {
+    try {
+      this.languageGuard ??= createLanguageGuard(apiKey);
+      return await this.languageGuard.customerLanguageOf(text);
+    } catch (err) {
+      this.logger.warn(
+        `reading the customer's language for chat agent ${agent.id} failed: ${(err as Error).message}`,
       );
       return '';
     }
